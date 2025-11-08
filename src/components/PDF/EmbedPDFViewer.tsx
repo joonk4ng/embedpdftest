@@ -311,13 +311,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
           createPluginRegistration(RenderPluginPackage),
           createPluginRegistration(InteractionManagerPluginPackage),
           createPluginRegistration(SelectionPluginPackage),
-          createPluginRegistration(AnnotationPluginPackage, {
-            ink: {
-              color: '#000000',
-              thickness: 3,
-              enabled: true,
-            },
-          }),
+          createPluginRegistration(AnnotationPluginPackage),
           createPluginRegistration(ZoomPluginPackage, {
             defaultZoomLevel: ZoomMode.FitPage,
           }),
@@ -659,6 +653,8 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                           <AnnotationLayer 
                             pageIndex={pageIndex} 
                             scale={scale} 
+                            pageWidth={width}
+                            pageHeight={height}
                             rotation={rotation}
                           />
                         </div>
@@ -896,17 +892,16 @@ const EmbedPDFAnnotationControls = forwardRef<{
     const { engine } = usePdfiumEngine();
     const [isInkMode, setIsInkMode] = useState(false);
 
-    // Update ink mode state and notify parent
+    // Update ink mode state and notify parent (check if activeToolId is 'ink' or similar)
     useEffect(() => {
-      if (annotationState?.inkMode !== undefined) {
-        const newInkMode = annotationState.inkMode;
-        setIsInkMode(newInkMode);
-        // Notify parent component of state change
-        if (onInkModeChange) {
-          onInkModeChange(newInkMode);
-        }
+      const activeTool = annotationState?.activeToolId;
+      const newInkMode = activeTool === 'ink' || activeTool === 'freehand' || activeTool === 'pen';
+      setIsInkMode(newInkMode);
+      // Notify parent component of state change
+      if (onInkModeChange) {
+        onInkModeChange(newInkMode);
       }
-    }, [annotationState?.inkMode, onInkModeChange]);
+    }, [annotationState?.activeToolId, onInkModeChange]);
 
     // Export PDF with annotations
     const exportPDF = useCallback(async (): Promise<Blob | null> => {
@@ -920,30 +915,33 @@ const EmbedPDFAnnotationControls = forwardRef<{
         console.log('🔍 exportPDF: Engine object:', engine);
         console.log('🔍 exportPDF: Engine keys:', Object.keys(engine));
         
+        // Type assertion for runtime checks
+        const engineAny = engine as any;
+        
         // Try to get the document from the engine and save it with annotations
         // Annotations should be part of the document when saved
-        if (typeof engine.saveDocument === 'function') {
+        if (typeof engineAny.saveDocument === 'function') {
           console.log('🔍 exportPDF: Trying engine.saveDocument()');
-          const pdfBytes = await engine.saveDocument();
+          const pdfBytes = await engineAny.saveDocument();
           return new Blob([pdfBytes], { type: 'application/pdf' });
-        } else if (typeof engine.exportDocument === 'function') {
+        } else if (typeof engineAny.exportDocument === 'function') {
           console.log('🔍 exportPDF: Trying engine.exportDocument()');
-          const pdfBytes = await engine.exportDocument();
+          const pdfBytes = await engineAny.exportDocument();
           return new Blob([pdfBytes], { type: 'application/pdf' });
-        } else if (typeof engine.getDocumentBytes === 'function') {
+        } else if (typeof engineAny.getDocumentBytes === 'function') {
           console.log('🔍 exportPDF: Trying engine.getDocumentBytes()');
-          const pdfBytes = await engine.getDocumentBytes();
+          const pdfBytes = await engineAny.getDocumentBytes();
           return new Blob([pdfBytes], { type: 'application/pdf' });
-        } else if (engine.documentManager) {
+        } else if (engineAny.documentManager) {
           console.log('🔍 exportPDF: Trying documentManager');
-          const docManager = engine.documentManager;
+          const docManager = engineAny.documentManager;
           if (typeof docManager.saveDocument === 'function') {
             const pdfBytes = await docManager.saveDocument();
             return new Blob([pdfBytes], { type: 'application/pdf' });
           }
-        } else if (engine.documents) {
+        } else if (engineAny.documents) {
           console.log('🔍 exportPDF: Trying engine.documents');
-          const documents = engine.documents;
+          const documents = engineAny.documents;
           if (documents && documents.length > 0) {
             const doc = documents[0];
             console.log('🔍 exportPDF: Document found, keys:', Object.keys(doc));
@@ -964,11 +962,11 @@ const EmbedPDFAnnotationControls = forwardRef<{
         }
         
         console.warn('🔍 exportPDF: No export method found. Engine structure:', {
-          hasSaveDocument: typeof engine.saveDocument === 'function',
-          hasExportDocument: typeof engine.exportDocument === 'function',
-          hasGetDocumentBytes: typeof engine.getDocumentBytes === 'function',
-          hasDocumentManager: !!engine.documentManager,
-          hasDocuments: !!engine.documents,
+          hasSaveDocument: typeof engineAny.saveDocument === 'function',
+          hasExportDocument: typeof engineAny.exportDocument === 'function',
+          hasGetDocumentBytes: typeof engineAny.getDocumentBytes === 'function',
+          hasDocumentManager: !!engineAny.documentManager,
+          hasDocuments: !!engineAny.documents,
           engineKeys: Object.keys(engine)
         });
         return null;
@@ -992,9 +990,7 @@ const EmbedPDFAnnotationControls = forwardRef<{
     // Also log when state changes
     useEffect(() => {
       console.log('🔍 Annotation State Changed:', {
-        inkMode: annotationState?.inkMode,
-        activeTool: annotationState?.activeTool,
-        annotations: annotationState?.annotations?.length || 0,
+        activeToolId: annotationState?.activeToolId,
         fullState: annotationState
       });
     }, [annotationState]);
@@ -1004,35 +1000,38 @@ const EmbedPDFAnnotationControls = forwardRef<{
       toggleInk: () => {
         console.log('🔍 toggleInk called, annotationProvides:', annotationProvides);
         if (annotationProvides) {
+          // Type assertion for runtime checks
+          const providesAny = annotationProvides as any;
+          const currentTool = annotationState?.activeToolId;
+          const isInkActive = currentTool === 'ink' || currentTool === 'freehand' || currentTool === 'pen';
+          
           // Try different method names for toggling ink/freehand annotation
-          if (typeof annotationProvides.toggleInkAnnotation === 'function') {
+          if (typeof providesAny.toggleInkAnnotation === 'function') {
             console.log('🔍 Calling toggleInkAnnotation()');
-            annotationProvides.toggleInkAnnotation();
-          } else if (typeof annotationProvides.toggleFreehand === 'function') {
+            providesAny.toggleInkAnnotation();
+          } else if (typeof providesAny.toggleFreehand === 'function') {
             console.log('🔍 Calling toggleFreehand()');
-            annotationProvides.toggleFreehand();
-          } else if (typeof annotationProvides.toggleInk === 'function') {
+            providesAny.toggleFreehand();
+          } else if (typeof providesAny.toggleInk === 'function') {
             console.log('🔍 Calling toggleInk()');
-            annotationProvides.toggleInk();
-          } else if (typeof annotationProvides.setInkMode === 'function') {
-            // Try setting ink mode directly
-            const currentMode = annotationState?.inkMode || false;
-            console.log('🔍 Calling setInkMode(!currentMode), currentMode:', currentMode);
-            annotationProvides.setInkMode(!currentMode);
-          } else if (typeof annotationProvides.setActiveTool === 'function') {
+            providesAny.toggleInk();
+          } else if (typeof providesAny.setActiveTool === 'function') {
             // Try setting active tool to ink
-            const currentTool = annotationState?.activeTool;
-            const newTool = currentTool === 'ink' ? null : 'ink';
+            const newTool = isInkActive ? null : 'ink';
             console.log('🔍 Calling setActiveTool("ink"), currentTool:', currentTool);
-            annotationProvides.setActiveTool(newTool);
-          } else if (typeof annotationProvides.enableInk === 'function') {
+            providesAny.setActiveTool(newTool);
+          } else if (typeof providesAny.setActiveToolId === 'function') {
+            // Try setting active tool ID to ink
+            const newTool = isInkActive ? null : 'ink';
+            console.log('🔍 Calling setActiveToolId("ink"), currentTool:', currentTool);
+            providesAny.setActiveToolId(newTool);
+          } else if (typeof providesAny.enableInk === 'function') {
             // Try enabling ink mode
-            const currentMode = annotationState?.inkMode || false;
-            console.log('🔍 Calling enableInk/disableInk, currentMode:', currentMode);
-            if (currentMode) {
-              annotationProvides.disableInk?.();
+            console.log('🔍 Calling enableInk/disableInk, isInkActive:', isInkActive);
+            if (isInkActive) {
+              providesAny.disableInk?.();
             } else {
-              annotationProvides.enableInk();
+              providesAny.enableInk();
             }
           } else {
             console.warn('🔍 Toggle ink method not found. Available methods:', Object.keys(annotationProvides));
@@ -1044,13 +1043,15 @@ const EmbedPDFAnnotationControls = forwardRef<{
       },
       clearAnnotations: () => {
         if (annotationProvides) {
+          // Type assertion for runtime checks
+          const providesAny = annotationProvides as any;
           // Clear all annotations - try different methods based on API
-          if (typeof annotationProvides.clearAnnotations === 'function') {
-            annotationProvides.clearAnnotations();
-          } else if (typeof annotationProvides.clearAll === 'function') {
-            annotationProvides.clearAll();
-          } else if (typeof annotationProvides.deleteAll === 'function') {
-            annotationProvides.deleteAll();
+          if (typeof providesAny.clearAnnotations === 'function') {
+            providesAny.clearAnnotations();
+          } else if (typeof providesAny.clearAll === 'function') {
+            providesAny.clearAll();
+          } else if (typeof providesAny.deleteAll === 'function') {
+            providesAny.deleteAll();
           } else {
             console.warn('Clear annotations method not found in EmbedPDF annotation provides');
           }
@@ -1084,7 +1085,7 @@ const EmbedPDFDrawingCanvas = React.forwardRef<DrawingCanvasRef, {
   const pdfCanvasRef = useRef<{ canvas: HTMLCanvasElement | null }>({ canvas: null });
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
 
-  // Create hidden canvas for coordinate mapping (only if component is actually used)
+    // Create hidden canvas for coordinate mapping (only if component is actually used)
   useEffect(() => {
     // Component is disabled, don't create hidden canvas
     // Clean up any existing hidden canvases
@@ -1094,6 +1095,8 @@ const EmbedPDFDrawingCanvas = React.forwardRef<DrawingCanvasRef, {
     }
     return;
     
+    // This code is unreachable (component is disabled), but kept for reference
+    // eslint-disable-next-line @typescript-eslint/no-unreachable-code
     if (!containerRef.current || !viewportRef.current) return;
 
     const hiddenCanvas = document.createElement('canvas');
@@ -1103,7 +1106,10 @@ const EmbedPDFDrawingCanvas = React.forwardRef<DrawingCanvasRef, {
     hiddenCanvas.style.zIndex = '-1';
     hiddenCanvas.style.display = 'none'; // Ensure it's hidden
     hiddenCanvas.className = 'pdf-canvas-hidden';
-    containerRef.current.appendChild(hiddenCanvas);
+    // This code is unreachable, but TypeScript still checks it
+    // Use non-null assertion since we already checked above
+    const container = containerRef.current!;
+    container.appendChild(hiddenCanvas);
     hiddenCanvasRef.current = hiddenCanvas;
     pdfCanvasRef.current.canvas = hiddenCanvas;
 
