@@ -111,6 +111,105 @@
   pointer-events: auto;
 }
 
+/* Annotation layer - must be transparent */
+.embedpdf-viewer [data-embedpdf-annotation-layer],
+.embedpdf-viewer [class*="annotation"],
+.embedpdf-viewer [class*="Annotation"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Ensure annotation layer children are also transparent */
+.embedpdf-viewer [data-embedpdf-annotation-layer] *,
+.embedpdf-viewer [class*="annotation"] *,
+.embedpdf-viewer [class*="Annotation"] * {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Annotation canvas/svg elements should be transparent */
+.embedpdf-viewer canvas[class*="annotation"],
+.embedpdf-viewer svg[class*="annotation"],
+.embedpdf-viewer div[class*="annotation"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Target any white backgrounds in annotation areas */
+.embedpdf-viewer div[style*="background"]:has([class*="annotation"]),
+.embedpdf-viewer div[style*="background-color"]:has([class*="annotation"]) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Make sure annotation layer wrapper is transparent */
+.embedpdf-viewer > div > div > div > div[style*="position: absolute"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Override white backgrounds only in annotation-related containers */
+.embedpdf-viewer [style*="position: absolute"][style*="background-color: white"]:has([class*="annotation"]),
+.embedpdf-viewer [style*="position: absolute"][style*="background: white"]:has([class*="annotation"]),
+.embedpdf-viewer div[style*="position: absolute"]:has(canvas[class*="annotation"]),
+.embedpdf-viewer div[style*="position: absolute"]:has(svg[class*="annotation"]) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Target EmbedPDF annotation containers (the div with outline) */
+.embedpdf-viewer div[style*="position: absolute"][style*="outline"]:has(svg),
+.embedpdf-viewer div[style*="position: absolute"][style*="outline-offset"]:has(svg) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Target annotation SVG containers specifically */
+.embedpdf-viewer div[style*="position: absolute"]:has(svg[style*="pointer-events: none"]) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Make sure annotation SVG elements themselves are transparent */
+.embedpdf-viewer svg[style*="position: absolute"][style*="pointer-events: none"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Target resize handles - keep them visible but ensure parent is transparent */
+.embedpdf-viewer [data-epdf-handle] {
+  /* Resize handles should remain visible */
+}
+
+/* Ensure the parent of resize handles is transparent */
+.embedpdf-viewer div:has([data-epdf-handle]) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* General rule: any div with outline and containing SVG (EmbedPDF annotation) should be transparent */
+.embedpdf-viewer div[style*="outline"]:has(svg),
+.embedpdf-viewer div[style*="outline-offset"]:has(svg),
+.embedpdf-viewer div[style*="cursor: move"]:has(svg) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Also target by the specific structure - div with absolute positioning and SVG child */
+.embedpdf-viewer div[style*="position: absolute"][style*="left"]:has(> svg),
+.embedpdf-viewer div[style*="position: absolute"][style*="top"]:has(> svg) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Hide any hidden canvases */
+.embedpdf-viewer canvas[style*="display: none"],
+.embedpdf-viewer canvas.pdf-canvas-hidden,
+.embedpdf-viewer canvas[class*="hidden"] {
+  display: none !important;
+  visibility: hidden !important;
+}
+
 /* Mobile responsive */
 @media (max-width: 768px) {
   .embedpdf-viewer-wrapper {
