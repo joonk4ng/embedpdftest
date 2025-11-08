@@ -615,7 +615,9 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                 style={{ 
                   backgroundColor: '#f1f3f5',
                   width: '100%',
-                  minHeight: '400px'
+                  minHeight: '400px',
+                  touchAction: isDrawingMode ? 'none' : 'pan-x pan-y pinch-zoom',
+                  WebkitOverflowScrolling: 'touch' as any
                 }}
               >
                 <Scroller
@@ -632,7 +634,8 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                           width, 
                           height,
                           position: 'relative',
-                          pointerEvents: 'auto'
+                          pointerEvents: 'auto',
+                          touchAction: isDrawingMode ? 'none' : 'pan-x pan-y pinch-zoom'
                         }}
                       >
                         {/* The RenderLayer is responsible for drawing the page */}
@@ -645,9 +648,10 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                             left: 0,
                             width: '100%',
                             height: '100%',
-                            pointerEvents: 'auto',
+                            pointerEvents: isDrawingMode ? 'auto' : 'none',
                             backgroundColor: 'transparent',
-                            zIndex: 1
+                            zIndex: 1,
+                            touchAction: isDrawingMode ? 'none' : 'pan-x pan-y pinch-zoom'
                           }}
                         >
                           <AnnotationLayer 

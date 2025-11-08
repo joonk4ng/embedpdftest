@@ -210,6 +210,34 @@
   visibility: hidden !important;
 }
 
+/* Mobile touch scrolling support */
+.embedpdf-viewer {
+  -webkit-overflow-scrolling: touch !important;
+  touch-action: pan-x pan-y pinch-zoom !important;
+}
+
+/* Ensure Viewport allows scrolling on mobile */
+.embedpdf-viewer [data-embedpdf-viewport],
+.embedpdf-viewer > div > div > div[style*="background"] {
+  touch-action: pan-x pan-y pinch-zoom !important;
+  -webkit-overflow-scrolling: touch !important;
+  overflow: auto !important;
+}
+
+/* Ensure Scroller component allows touch scrolling */
+.embedpdf-viewer [data-embedpdf-scroller],
+.embedpdf-viewer [class*="scroller"],
+.embedpdf-viewer [class*="Scroller"] {
+  touch-action: pan-x pan-y pinch-zoom !important;
+  -webkit-overflow-scrolling: touch !important;
+  overflow: auto !important;
+}
+
+/* Allow scrolling on page containers */
+.embedpdf-viewer [style*="position: relative"][style*="width"] {
+  touch-action: pan-x pan-y pinch-zoom !important;
+}
+
 /* Mobile responsive */
 @media (max-width: 768px) {
   .embedpdf-viewer-wrapper {
@@ -218,11 +246,25 @@
   
   .embedpdf-viewer {
     min-height: 300px;
+    height: 100vh;
+    max-height: 100vh;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x pan-y pinch-zoom !important;
   }
   
   .embedpdf-viewer .pdf-container {
     padding: 10px;
     min-height: 300px;
+    touch-action: pan-x pan-y pinch-zoom !important;
+  }
+  
+  /* Ensure Viewport is scrollable on mobile */
+  .embedpdf-viewer > div > div {
+    height: 100% !important;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x pan-y pinch-zoom !important;
   }
 }
 
