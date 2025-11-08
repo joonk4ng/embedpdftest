@@ -1,4 +1,3 @@
-import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as pdfjsLib from 'pdfjs-dist'
 import './index.css'
@@ -12,8 +11,10 @@ if (typeof window !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerPort = null
 }
 
+// Temporarily disable StrictMode to avoid double renders during debugging
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+  <App />
+  // <StrictMode>
+  //   <App />
+  // </StrictMode>,
 )

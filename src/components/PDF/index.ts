@@ -1,14 +1,10 @@
 // PDF Components - Main exports
-export { EnhancedPDFViewer } from './EnhancedPDFViewer';
-export { EESTPDFViewer } from './EESTPDFViewer';
-export { PDFViewer } from './PDFViewer';
-export { PDFToolbar } from './PDFToolbar';
-export { default as PDFPreviewViewer } from './PDFPreviewViewer';
+// New EmbedPDF-based viewer
+export { EmbedPDFViewer } from './EmbedPDFViewer';
+export { default as EmbedPDFViewerDefault } from './EmbedPDFViewer';
 
-// New refactored components
-export { PDFCanvas } from './PDFCanvas';
+// Drawing canvas (still used with EmbedPDF)
 export { DrawingCanvas } from './DrawingCanvas';
-export { ZoomControls } from './ZoomControls';
 
-// Re-export the default EnhancedPDFViewer for backward compatibility
-export { default } from './EnhancedPDFViewer';
+// Re-export EmbedPDFViewer as default
+export { default } from './EmbedPDFViewer';

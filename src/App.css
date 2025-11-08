@@ -20,6 +20,30 @@ body {
   min-height: 100vh;
   background-color: #f5f5f5;
   padding: 1rem;
+  position: relative;
+}
+
+/* Allow PDF signing page to break out of app wrapper */
+.pdf-signing-page,
+.app > .pdf-signing-page {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  z-index: 10000 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Ensure app wrapper doesn't interfere with PDF signing page */
+.app:has(.pdf-signing-page) {
+  padding: 0 !important;
+  overflow: hidden !important;
 }
 
 /* Form Container */

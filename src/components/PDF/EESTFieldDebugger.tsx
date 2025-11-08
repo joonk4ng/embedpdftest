@@ -1,7 +1,7 @@
 // EEST Field Debugger Component - Helps troubleshoot field mapping issues
 import React, { useState } from 'react';
-import { EESTPDFViewer } from './EESTPDFViewer';
-import { type EESTSaveOptions, testEESTPDFPopulation } from '../../utils/PDF/eestSaveHandler';
+import { EmbedPDFViewer } from './EmbedPDFViewer';
+import { testEESTPDFPopulation } from '../../utils/PDF/eestSaveHandler';
 import { type EESTFormData, type EESTTimeEntry, FormType } from '../../utils/engineTimeDB';
 import { mapEESTToPDFFields } from '../../utils/fieldmapper/eestFieldMapper';
 import { getPDF } from '../../utils/pdfStorage';
@@ -269,15 +269,6 @@ export const EESTFieldDebugger: React.FC = () => {
     }
   };
 
-  const saveOptions: EESTSaveOptions = {
-    formData: testFormData,
-    timeEntries: testTimeEntries,
-    incidentName: 'Test Fire Incident',
-    incidentNumber: 'FIRE-2024-001',
-    contractorAgencyName: 'Test Contracting Co.',
-    date: '2024-01-15'
-  };
-
   const handleSave = (_pdfData: Blob, _previewImage: Blob) => {
     console.log('🔍 EEST Field Debugger: PDF saved with debugging info');
     console.log('🔍 Check browser console for detailed field mapping logs');
@@ -420,10 +411,9 @@ export const EESTFieldDebugger: React.FC = () => {
         <p style={{ fontSize: '12px', color: '#666' }}>
           Open browser console to see detailed field mapping logs when saving
         </p>
-        <EESTPDFViewer
+        <EmbedPDFViewer
           pdfId="eest-form"
           onSave={handleSave}
-          eestSaveOptions={saveOptions}
           style={{ maxWidth: '100%' }}
         />
       </div>

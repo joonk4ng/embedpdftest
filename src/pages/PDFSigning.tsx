@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { EnhancedPDFViewer } from '../components/PDF';
+import { createPortal } from 'react-dom';
+import { EmbedPDFViewer } from '../components/PDF/EmbedPDFViewer';
 import { getPDF, storePDFWithId } from '../utils/pdfStorage';
 
-// Utility function to convert Date to MM/DD/YY format (same as Federal form)
 const formatToMMDDYY = (date: Date): string => {
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
   const day = date.getDate().toString().padStart(2, '0');
@@ -25,7 +25,6 @@ const PDFSigning: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Get parameters from URL
     const urlPdfId = searchParams.get('pdfId') || 'federal-form';
     const urlCrewNumber = searchParams.get('crewNumber') || 'N/A';
     const urlFireName = searchParams.get('fireName') || 'N/A';
@@ -40,7 +39,6 @@ const PDFSigning: React.FC = () => {
     });
     setDate(urlDate);
 
-    // Verify PDF exists
     const checkPDF = async () => {
       try {
         const storedPDF = await getPDF(urlPdfId);
@@ -59,25 +57,14 @@ const PDFSigning: React.FC = () => {
 
   const handleSave = async (pdfData: Blob, previewImage: Blob) => {
     try {
-      console.log('🔍 PDFSigning: Saving signed PDF to gallery...');
-      console.log('🔍 PDFSigning: Date from URL:', date);
-      console.log('🔍 PDFSigning: Formatted date:', date || formatToMMDDYY(new Date()));
-      
       const saveDate = date || formatToMMDDYY(new Date());
-      console.log('🔍 PDFSigning: Using save date:', saveDate);
-      
-      // Create meaningful names for the PDF
       const crewNumber = crewInfo?.crewNumber && crewInfo.crewNumber !== 'N/A' ? crewInfo.crewNumber : 'Crew';
       const fireName = crewInfo?.fireName && crewInfo.fireName !== 'N/A' ? crewInfo.fireName.replace(/[^a-zA-Z0-9]/g, '-') : 'Fire';
       const fireNumber = crewInfo?.fireNumber && crewInfo.fireNumber !== 'N/A' ? crewInfo.fireNumber : 'Number';
       
-      // Use a consistent ID for the signed PDF (one per date)
       const signedPdfId = `federal-signed-${saveDate.replace(/\//g, '-')}`;
-      
-      // Create a descriptive filename
       const filename = `Federal-Form-Signed-${crewNumber}-${fireName}-${fireNumber}-${saveDate.replace(/\//g, '-')}.pdf`;
       
-      // Store the signed PDF in the gallery (this will replace any existing PDF for this date)
       await storePDFWithId(signedPdfId, pdfData, previewImage, {
         filename: filename,
         date: saveDate,
@@ -86,10 +73,6 @@ const PDFSigning: React.FC = () => {
         fireNumber: crewInfo?.fireNumber || 'N/A'
       });
       
-      console.log('🔍 PDFSigning: PDF saved to gallery with ID:', signedPdfId);
-      console.log('🔍 PDFSigning: PDF saved with date:', saveDate);
-      
-      // Also create a download link for immediate access
       const url = URL.createObjectURL(pdfData);
       const a = document.createElement('a');
       a.href = url;
@@ -99,10 +82,7 @@ const PDFSigning: React.FC = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      // Show success message
-      alert('PDF signed and saved to gallery successfully! (Replaced any existing PDF for this date)');
-      
-      // Navigate back to main page
+      alert('PDF signed and saved to gallery successfully!');
       navigate('/');
     } catch (error) {
       console.error('Error saving PDF:', error);
@@ -115,30 +95,40 @@ const PDFSigning: React.FC = () => {
   };
 
   if (isLoading) {
-    return (
+    return createPortal(
       <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        height: '100vh',
-        fontSize: '18px',
-        color: '#666'
+        backgroundColor: '#f5f5f5',
+        zIndex: 10000
       }}>
-        Loading PDF...
-      </div>
+        <div style={{ fontSize: '18px', color: '#666' }}>Loading PDF...</div>
+      </div>,
+      document.body
     );
   }
 
   if (error) {
-    return (
+    return createPortal(
       <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        height: '100vh',
+        backgroundColor: '#f5f5f5',
         padding: '20px',
-        textAlign: 'center'
+        zIndex: 10000
       }}>
         <h2 style={{ color: '#dc3545', marginBottom: '20px' }}>Error</h2>
         <p style={{ marginBottom: '20px', fontSize: '16px' }}>{error}</p>
@@ -156,18 +146,25 @@ const PDFSigning: React.FC = () => {
         >
           Return to Main Page
         </button>
-      </div>
+      </div>,
+      document.body
     );
   }
 
-  return (
+  return createPortal(
     <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
       width: '100vw',
       height: '100vh',
       display: 'flex',
       flexDirection: 'column',
       backgroundColor: '#f5f5f5',
-      overflow: 'hidden'
+      overflow: 'hidden',
+      zIndex: 10000
     }}>
       {/* Header */}
       <div style={{
@@ -200,17 +197,10 @@ const PDFSigning: React.FC = () => {
             padding: '8px 16px',
             cursor: 'pointer',
             fontSize: '14px',
-            fontWeight: '500',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            transition: 'background-color 0.2s ease'
+            fontWeight: '500'
           }}
-          onMouseOver={(e) => (e.target as HTMLButtonElement).style.backgroundColor = '#c82333'}
-          onMouseOut={(e) => (e.target as HTMLButtonElement).style.backgroundColor = '#dc3545'}
         >
-          <span>✕</span>
-          Close
+          ✕ Close
         </button>
       </div>
       
@@ -225,19 +215,21 @@ const PDFSigning: React.FC = () => {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         padding: '20px',
         boxSizing: 'border-box'
       }}>
-        <EnhancedPDFViewer
+        <EmbedPDFViewer
           pdfId={pdfId}
           onSave={handleSave}
           crewInfo={crewInfo}
           date={date}
         />
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 
 export default PDFSigning;
+

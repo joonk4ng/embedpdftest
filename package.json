@@ -11,6 +11,9 @@
     "start": "vite preview"
   },
   "dependencies": {
+    "@embedpdf/core": "^1.4.1",
+    "@embedpdf/engines": "^1.4.1",
+    "@embedpdf/models": "^1.4.1",
     "dexie": "^4.0.11",
     "jspdf": "^3.0.2",
     "pdf-lib": "^1.17.1",
