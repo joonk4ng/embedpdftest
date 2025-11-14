@@ -16,6 +16,7 @@
     "@embedpdf/models": "^1.4.1",
     "@embedpdf/pdfium": "^1.4.1",
     "@embedpdf/plugin-annotation": "^1.4.1",
+    "@embedpdf/plugin-export": "^1.4.1",
     "@embedpdf/plugin-interaction-manager": "^1.4.1",
     "@embedpdf/plugin-loader": "^1.4.1",
     "@embedpdf/plugin-render": "^1.4.1",

@@ -62,3 +62,5 @@ export async function deletePDF(id: string): Promise<void> {
   await pdfStorageDB.pdfs.delete(id);
 }
 
+
+

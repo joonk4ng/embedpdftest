@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperat
 import { createPortal } from 'react-dom';
 import { getPDF } from '../../utils/pdfStorage';
 import { DrawingCanvas, type DrawingCanvasRef } from './DrawingCanvas';
-import { savePDFWithSignature, downloadOriginalPDF } from '../../utils/PDF/pdfSaveHandler';
+import { downloadOriginalPDF } from '../../utils/PDF/pdfSaveHandler';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as PDFLib from 'pdf-lib';
 import { 
@@ -24,11 +24,13 @@ import { LoaderPluginPackage } from '@embedpdf/plugin-loader/react';
 import { RenderLayer, RenderPluginPackage } from '@embedpdf/plugin-render/react';
 import { ZoomPluginPackage, ZoomMode, useZoom } from '@embedpdf/plugin-zoom/react';
 import { InteractionManagerPluginPackage, PagePointerProvider } from '@embedpdf/plugin-interaction-manager/react';
-import { AnnotationPluginPackage, AnnotationLayer, useAnnotation } from '@embedpdf/plugin-annotation/react';
+import { AnnotationPluginPackage, AnnotationLayer, useAnnotation, useAnnotationCapability } from '@embedpdf/plugin-annotation/react';
 import { SelectionPluginPackage } from '@embedpdf/plugin-selection/react';
+import { ExportPluginPackage, useExportCapability } from '@embedpdf/plugin-export/react';
 
 export interface EmbedPDFViewerProps {
   pdfId?: string;
+  pdfBlob?: Blob;
   onSave?: (pdfData: Blob, previewImage: Blob) => void;
   onBeforeSign?: () => Promise<void>;
   className?: string;
@@ -54,6 +56,7 @@ export interface EmbedPDFViewerRef {
 
 export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>(({
   pdfId,
+  pdfBlob,
   onSave,
   onBeforeSign,
   className,
@@ -96,7 +99,12 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
 
   // Load PDF and create blob URL
   useEffect(() => {
-    if (!pdfId) return;
+    // Validate that either pdfId or pdfBlob is provided
+    if (!pdfId && !pdfBlob) {
+      setError('Either pdfId or pdfBlob must be provided');
+      setIsLoading(false);
+      return;
+    }
 
     let mounted = true;
     let currentPdfUrl: string | null = null;
@@ -106,177 +114,244 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
         setIsLoading(true);
         setError(null);
 
-        const storedPDF = await getPDF(pdfId);
-        if (!storedPDF) {
-          throw new Error('PDF not found in storage');
+        // Determine the effective PDF ID for the loader
+        const effectivePdfId = pdfId || 'federal-form-temp';
+
+        let pdfBlobToUse: Blob;
+        let shouldFillForm = false;
+
+        // If pdfBlob prop is provided, use it directly (assume it's already filled)
+        if (pdfBlob) {
+          console.log('🔍 EmbedPDFViewer: Using provided PDF blob, size:', pdfBlob.size);
+          pdfBlobToUse = pdfBlob;
+          shouldFillForm = false; // Skip form filling when blob is provided
+        } else if (pdfId) {
+          // Load from IndexedDB storage
+          const storedPDF = await getPDF(pdfId);
+          if (!storedPDF) {
+            throw new Error('PDF not found in storage');
+          }
+          pdfBlobToUse = storedPDF.pdf;
+          shouldFillForm = true; // May need to fill form if loading from storage
+        } else {
+          throw new Error('Either pdfId or pdfBlob must be provided');
         }
 
         // Verify the PDF has form fields and check if they're filled
         // This helps ensure we're displaying the correct filled PDF
-        let pdfBlob = storedPDF.pdf;
+        // Skip this step when pdfBlob prop is provided (assume it's already filled)
+        let finalPdfBlob: Blob = pdfBlobToUse;
         
-        try {
-          // Load with pdf-lib to verify form fields are filled
-          const pdfDoc = await PDFLib.PDFDocument.load(await storedPDF.pdf.arrayBuffer());
-          const form = pdfDoc.getForm();
-          const fields = form.getFields();
-          
-          console.log('🔍 EmbedPDFViewer: PDF loaded, checking form fields...');
-          console.log(`🔍 EmbedPDFViewer: Found ${fields.length} form fields in PDF`);
-          
-          // Check if any fields have values (indicating the PDF is filled)
-          let filledFieldsCount = 0;
-          fields.forEach(field => {
-            try {
-              const fieldName = field.getName();
-              if (field.constructor.name === 'PDFTextField') {
-                const text = (field as any).getText();
-                if (text && text.trim().length > 0) {
-                  filledFieldsCount++;
-                  console.log(`🔍 EmbedPDFViewer: Field "${fieldName}" has value: "${text}"`);
-                }
-              } else if (field.constructor.name === 'PDFCheckBox') {
-                if ((field as any).isChecked()) {
-                  filledFieldsCount++;
-                  console.log(`🔍 EmbedPDFViewer: Checkbox "${fieldName}" is checked`);
-                }
-              } else if (field.constructor.name === 'PDFDropdown') {
-                const selected = (field as any).getSelected();
-                if (selected && selected.length > 0) {
-                  filledFieldsCount++;
-                  console.log(`🔍 EmbedPDFViewer: Dropdown "${fieldName}" has selection: "${selected[0]}"`);
-                }
-              }
-            } catch (fieldError) {
-              // Ignore errors for individual fields
-            }
-          });
-          
-          console.log(`🔍 EmbedPDFViewer: Found ${filledFieldsCount} filled fields out of ${fields.length} total fields`);
-          
-          // If the PDF has form fields but none are filled, fill it now
-          if (fields.length > 0 && filledFieldsCount === 0) {
-            console.warn('⚠️ EmbedPDFViewer: PDF has form fields but none appear to be filled. Attempting to fill PDF with data from database...');
-            
-            try {
-              // Only fill Federal forms (pdfId === 'federal-form')
-              if (pdfId === 'federal-form') {
-                // Load form data from database
-                const formData = await loadFederalFormData();
-                const allEquipmentEntries = await loadAllFederalEquipmentEntries();
-                const allPersonnelEntries = await loadAllFederalPersonnelEntries();
-                
-                if (formData) {
-                  // Get the date from the form data or use today's date
-                  const formDate = date || new Date().toLocaleDateString();
-                  
-                  // Filter entries by date (if date is available)
-                  const equipmentEntries = formDate 
-                    ? allEquipmentEntries.filter(e => e.date === formDate)
-                    : allEquipmentEntries;
-                  const personnelEntries = formDate
-                    ? allPersonnelEntries.filter(e => e.date === formDate)
-                    : allPersonnelEntries;
-                  
-                  // Get checkbox states from form data
-                  const checkboxStates = formData.checkboxStates || {
-                    noMealsLodging: false,
-                    noMeals: false,
-                    travel: false,
-                    noLunch: false,
-                    hotline: true
-                  };
-                  
-                  // Map form data to PDF fields
-                  const pdfFields = mapFederalToPDFFields(
-                    formData,
-                    equipmentEntries,
-                    personnelEntries,
-                    checkboxStates
-                  );
-                  
-                  console.log('🔍 EmbedPDFViewer: Filling PDF with', Object.keys(pdfFields).length, 'fields...');
-                  
-                  // Fill the form fields
-                  let filledCount = 0;
-                  Object.entries(pdfFields).forEach(([fieldName, value]) => {
-                    try {
-                      const field = form.getField(fieldName);
-                      if (field) {
-                        const hasSetText = typeof (field as any).setText === 'function';
-                        const hasCheck = typeof (field as any).check === 'function';
-                        const hasSelect = typeof (field as any).select === 'function';
-                        
-                        if (hasSetText) {
-                          (field as any).setText(value);
-                          filledCount++;
-                        } else if (hasCheck) {
-                          if (value === 'Yes' || value === 'On' || value === 'YES' || value === 'HOURS') {
-                            (field as any).check();
-                          } else {
-                            (field as any).uncheck();
-                          }
-                          filledCount++;
-                        } else if (hasSelect) {
-                          (field as any).select(value);
-                          filledCount++;
-                        }
-                      }
-                    } catch (fieldError) {
-                      console.warn(`⚠️ EmbedPDFViewer: Error filling field ${fieldName}:`, fieldError);
-                    }
-                  });
-                  
-                  console.log(`🔍 EmbedPDFViewer: Successfully filled ${filledCount} fields`);
-                  
-                  // Update the pdfDoc reference for flattening
-                  // The form is already filled in the current pdfDoc, so we can use it directly
-                  filledFieldsCount = filledCount;
-                } else {
-                  console.warn('⚠️ EmbedPDFViewer: No form data found in database to fill PDF');
-                }
-              }
-            } catch (fillError) {
-              console.error('⚠️ EmbedPDFViewer: Error filling PDF:', fillError);
-              // Continue with unfilled PDF if filling fails
-            }
-          }
-          
-          // EmbedPDF may not render filled form field values properly
-          // Flatten the form to make filled values visible as part of the PDF content
-          // This makes the form non-editable, which is fine for the signing/viewing stage
+        console.log('🔍 EmbedPDFViewer: Starting PDF load, initial blob size:', finalPdfBlob.size);
+        
+        // Only verify and potentially fill form fields when loading from pdfId
+        if (shouldFillForm) {
           try {
-            if (filledFieldsCount > 0) {
-              console.log('🔍 EmbedPDFViewer: Flattening form to make filled values visible in EmbedPDF...');
-              // Use the current pdfDoc's form (which may have been filled above)
-              const formToFlatten = pdfDoc.getForm();
-              formToFlatten.flatten();
-              const flattenedBytes = await pdfDoc.save();
-              pdfBlob = new Blob([flattenedBytes], { type: 'application/pdf' });
-              console.log('🔍 EmbedPDFViewer: Form flattened successfully');
-            }
-          } catch (flattenError) {
-            console.warn('⚠️ EmbedPDFViewer: Could not flatten form, continuing with original PDF:', flattenError);
-            // If flattening fails but we filled the PDF, still use the filled version
-            if (filledFieldsCount > 0) {
+            // Load with pdf-lib to verify form fields are filled
+            const pdfDoc = await PDFLib.PDFDocument.load(await pdfBlobToUse.arrayBuffer());
+            const form = pdfDoc.getForm();
+            const fields = form.getFields();
+            
+            console.log('🔍 EmbedPDFViewer: PDF loaded, checking form fields...');
+            console.log(`🔍 EmbedPDFViewer: Found ${fields.length} form fields in PDF`);
+            
+            // Check if any fields have values (indicating the PDF is filled)
+            let filledFieldsCount = 0;
+            fields.forEach(field => {
               try {
-                const filledBytes = await pdfDoc.save();
-                pdfBlob = new Blob([filledBytes], { type: 'application/pdf' });
-                console.log('🔍 EmbedPDFViewer: Using filled (but not flattened) PDF');
-              } catch (saveError) {
-                console.error('⚠️ EmbedPDFViewer: Could not save filled PDF:', saveError);
+                const fieldName = field.getName();
+                if (field.constructor.name === 'PDFTextField') {
+                  const text = (field as any).getText();
+                  if (text && text.trim().length > 0) {
+                    filledFieldsCount++;
+                    console.log(`🔍 EmbedPDFViewer: Field "${fieldName}" has value: "${text}"`);
+                  }
+                } else if (field.constructor.name === 'PDFCheckBox') {
+                  if ((field as any).isChecked()) {
+                    filledFieldsCount++;
+                    console.log(`🔍 EmbedPDFViewer: Checkbox "${fieldName}" is checked`);
+                  }
+                } else if (field.constructor.name === 'PDFDropdown') {
+                  const selected = (field as any).getSelected();
+                  if (selected && selected.length > 0) {
+                    filledFieldsCount++;
+                    console.log(`🔍 EmbedPDFViewer: Dropdown "${fieldName}" has selection: "${selected[0]}"`);
+                  }
+                }
+              } catch (fieldError) {
+                // Ignore errors for individual fields
+              }
+            });
+            
+            console.log(`🔍 EmbedPDFViewer: Found ${filledFieldsCount} filled fields out of ${fields.length} total fields`);
+            
+            // If the PDF has form fields but none are filled, fill it now
+            if (fields.length > 0 && filledFieldsCount === 0) {
+              console.warn('⚠️ EmbedPDFViewer: PDF has form fields but none appear to be filled. Attempting to fill PDF with data from database...');
+              
+              try {
+                // Only fill Federal forms (pdfId === 'federal-form')
+                if (pdfId === 'federal-form') {
+                  // Load form data from database
+                  const formData = await loadFederalFormData();
+                  const allEquipmentEntries = await loadAllFederalEquipmentEntries();
+                  const allPersonnelEntries = await loadAllFederalPersonnelEntries();
+                  
+                  if (formData) {
+                    // Get the date from the form data or use today's date
+                    const formDate = date || new Date().toLocaleDateString();
+                    
+                    // Filter entries by date (if date is available)
+                    const equipmentEntries = formDate 
+                      ? allEquipmentEntries.filter(e => e.date === formDate)
+                      : allEquipmentEntries;
+                    const personnelEntries = formDate
+                      ? allPersonnelEntries.filter(e => e.date === formDate)
+                      : allPersonnelEntries;
+                    
+                    // Get checkbox states from form data
+                    const checkboxStates = formData.checkboxStates || {
+                      noMealsLodging: false,
+                      noMeals: false,
+                      travel: false,
+                      noLunch: false,
+                      hotline: true
+                    };
+                    
+                    // Map form data to PDF fields
+                    const pdfFields = mapFederalToPDFFields(
+                      formData,
+                      equipmentEntries,
+                      personnelEntries,
+                      checkboxStates
+                    );
+                    
+                    console.log('🔍 EmbedPDFViewer: Filling PDF with', Object.keys(pdfFields).length, 'fields...');
+                    
+                    // Fill the form fields
+                    let filledCount = 0;
+                    Object.entries(pdfFields).forEach(([fieldName, value]) => {
+                      try {
+                        const field = form.getField(fieldName);
+                        if (field) {
+                          const hasSetText = typeof (field as any).setText === 'function';
+                          const hasCheck = typeof (field as any).check === 'function';
+                          const hasSelect = typeof (field as any).select === 'function';
+                          
+                          if (hasSetText) {
+                            (field as any).setText(value);
+                            filledCount++;
+                          } else if (hasCheck) {
+                            if (value === 'Yes' || value === 'On' || value === 'YES' || value === 'HOURS') {
+                              (field as any).check();
+                            } else {
+                              (field as any).uncheck();
+                            }
+                            filledCount++;
+                          } else if (hasSelect) {
+                            (field as any).select(value);
+                            filledCount++;
+                          }
+                        }
+                      } catch (fieldError) {
+                        console.warn(`⚠️ EmbedPDFViewer: Error filling field ${fieldName}:`, fieldError);
+                      }
+                    });
+                    
+                    console.log(`🔍 EmbedPDFViewer: Successfully filled ${filledCount} fields`);
+                    
+                    // Update the pdfDoc reference for flattening
+                    // The form is already filled in the current pdfDoc, so we can use it directly
+                    filledFieldsCount = filledCount;
+                  } else {
+                    console.warn('⚠️ EmbedPDFViewer: No form data found in database to fill PDF');
+                  }
+                }
+              } catch (fillError) {
+                console.error('⚠️ EmbedPDFViewer: Error filling PDF:', fillError);
+                // Continue with unfilled PDF if filling fails
               }
             }
+            
+            // Save the PDF document if we filled it or if it was already filled
+            // This ensures we have a fresh blob with the current state
+            // Don't flatten - EmbedPDF should be able to display filled form fields and add annotations
+            // Flattening can interfere with annotation saving, so let's try without it
+            try {
+              console.log('🔍 EmbedPDFViewer: Saving PDF document (filledFieldsCount:', filledFieldsCount, ')...');
+              const savedBytes = await pdfDoc.save();
+              // Convert Uint8Array to ArrayBuffer for Blob
+              const arrayBuffer = savedBytes.buffer instanceof ArrayBuffer 
+                ? savedBytes.buffer.slice(savedBytes.byteOffset, savedBytes.byteOffset + savedBytes.byteLength)
+                : new Uint8Array(savedBytes).buffer;
+              finalPdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
+              console.log('🔍 EmbedPDFViewer: PDF saved, new blob size:', finalPdfBlob.size, '(filledFieldsCount:', filledFieldsCount, ')');
+              console.log('🔍 EmbedPDFViewer: Using PDF with form structure preserved for annotations');
+            } catch (saveError) {
+              console.error('⚠️ EmbedPDFViewer: Could not save PDF:', saveError);
+              // Fallback to original if save fails
+              finalPdfBlob = pdfBlobToUse;
+            }
+          } catch (pdfLibError) {
+            console.warn('🔍 EmbedPDFViewer: Could not verify form fields with pdf-lib, continuing anyway:', pdfLibError);
+            // Continue with the PDF even if we can't verify fields
+            // Ensure finalPdfBlob is still set
+            if (!finalPdfBlob) {
+              finalPdfBlob = pdfBlobToUse;
+            }
           }
-        } catch (pdfLibError) {
-          console.warn('🔍 EmbedPDFViewer: Could not verify form fields with pdf-lib, continuing anyway:', pdfLibError);
-          // Continue with the PDF even if we can't verify fields
+        } else {
+          // When pdfBlob prop is provided, skip form verification/filling
+          console.log('🔍 EmbedPDFViewer: Using provided PDF blob directly (skipping form verification)');
         }
 
         // Create object URL for the PDF blob
-        const url = URL.createObjectURL(pdfBlob);
+        if (!finalPdfBlob || finalPdfBlob.size === 0) {
+          throw new Error('PDF blob is empty or invalid');
+        }
+        
+        // Validate PDF blob type
+        if (finalPdfBlob.type && finalPdfBlob.type !== 'application/pdf') {
+          console.warn('⚠️ EmbedPDFViewer: PDF blob type is not application/pdf:', finalPdfBlob.type);
+        }
+        
+        console.log('🔍 EmbedPDFViewer: Final PDF blob before creating URL, size:', finalPdfBlob.size, 'type:', finalPdfBlob.type);
+        console.log('🔍 EmbedPDFViewer: Creating blob URL for PDF...');
+        
+        // Verify the blob is valid by trying to read a small portion
+        try {
+          const testSlice = finalPdfBlob.slice(0, 4);
+          const testArray = await testSlice.arrayBuffer();
+          const testBytes = new Uint8Array(testArray);
+          const pdfHeader = String.fromCharCode(...testBytes);
+          if (pdfHeader !== '%PDF') {
+            console.warn('⚠️ EmbedPDFViewer: PDF blob does not start with %PDF header:', pdfHeader);
+          } else {
+            console.log('✅ EmbedPDFViewer: PDF blob header verified:', pdfHeader);
+          }
+        } catch (headerError) {
+          console.warn('⚠️ EmbedPDFViewer: Could not verify PDF header:', headerError);
+        }
+        
+        const url = URL.createObjectURL(finalPdfBlob);
         currentPdfUrl = url;
         pdfUrlRef.current = url;
+        
+        console.log('🔍 EmbedPDFViewer: Blob URL created:', url);
+        console.log('🔍 EmbedPDFViewer: Testing blob URL accessibility...');
+        
+        // Test if the blob URL is accessible
+        try {
+          const testResponse = await fetch(url);
+          if (!testResponse.ok) {
+            throw new Error(`Blob URL fetch failed: ${testResponse.status} ${testResponse.statusText}`);
+          }
+          const testBlob = await testResponse.blob();
+          console.log('✅ EmbedPDFViewer: Blob URL is accessible, fetched size:', testBlob.size);
+        } catch (fetchError) {
+          console.error('❌ EmbedPDFViewer: Blob URL is not accessible:', fetchError);
+          throw new Error(`Blob URL is not accessible: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
+        }
         
         if (!mounted) {
           URL.revokeObjectURL(url);
@@ -284,9 +359,10 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
         }
 
         setPdfUrl(url);
+        console.log('🔍 EmbedPDFViewer: PDF URL set, ready to load into EmbedPDF');
 
         // Load PDF.js document for saving functionality
-        const arrayBuffer = await pdfBlob.arrayBuffer();
+        const arrayBuffer = await finalPdfBlob.arrayBuffer();
         const loadingTask = pdfjsLib.getDocument({ 
           data: arrayBuffer,
           useSystemFonts: true,
@@ -296,12 +372,13 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
         pdfDocRef.current = pdfDoc;
 
         // Create plugins with the PDF URL
+        console.log('🔍 EmbedPDFViewer: Creating plugins with URL:', url, 'ID:', effectivePdfId);
         const pdfPlugins = [
           createPluginRegistration(LoaderPluginPackage, {
             loadingOptions: {
               type: 'url',
               pdfFile: {
-                id: pdfId,
+                id: effectivePdfId,
                 url: url,
               },
             },
@@ -311,19 +388,29 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
           createPluginRegistration(RenderPluginPackage),
           createPluginRegistration(InteractionManagerPluginPackage),
           createPluginRegistration(SelectionPluginPackage),
-          createPluginRegistration(AnnotationPluginPackage),
+          createPluginRegistration(AnnotationPluginPackage, {
+            autoCommit: true, // Automatically commit annotations to the PDF document
+          }),
           createPluginRegistration(ZoomPluginPackage, {
             defaultZoomLevel: ZoomMode.FitPage,
+          }),
+          createPluginRegistration(ExportPluginPackage, {
+            defaultFileName: effectivePdfId ? `${effectivePdfId}.pdf` : 'federal-form.pdf',
           }),
         ];
         
         setPlugins(pdfPlugins);
+        console.log('✅ EmbedPDFViewer: Plugins created and set, count:', pdfPlugins.length);
         setIsLoading(false);
+        console.log('✅ EmbedPDFViewer: Loading state set to false, PDF should render now');
       } catch (err) {
-        console.error('Error loading PDF:', err);
+        console.error('❌ EmbedPDFViewer: Error loading PDF:', err);
+        console.error('❌ EmbedPDFViewer: Error stack:', err instanceof Error ? err.stack : 'No stack trace');
         if (mounted) {
-          setError(err instanceof Error ? err.message : 'Failed to load PDF');
+          const errorMessage = err instanceof Error ? err.message : 'Failed to load PDF';
+          setError(errorMessage);
           setIsLoading(false);
+          console.error('❌ EmbedPDFViewer: Error state set:', errorMessage);
         }
       }
     };
@@ -339,7 +426,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
         pdfDocRef.current.destroy();
       }
     };
-  }, [pdfId]);
+  }, [pdfId, pdfBlob, date]);
 
   // Toggle drawing mode (now uses EmbedPDF annotations)
   const toggleDrawingMode = useCallback(async () => {
@@ -371,123 +458,73 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
     drawingCanvasRef.current?.clearDrawing();
   }, []);
 
-  // Handle saving the PDF with signature (now uses EmbedPDF annotations)
+  // Handle saving the PDF with signature (uses EmbedPDF's default save logic)
   const handleSave = useCallback(async () => {
-    if (!pdfDocRef.current || !onSave) return;
+    if (!onSave) return;
 
     try {
-      // Try to export PDF with annotations from EmbedPDF first
-      if (annotationControlsRef.current?.exportPDF) {
-        console.log('🔍 EmbedPDFViewer: Attempting to export PDF with annotations from EmbedPDF...');
-        const annotatedPdfBlob = await annotationControlsRef.current.exportPDF();
+      // Use EmbedPDF's exportPDF method to get the PDF with annotations
+      // This uses EmbedPDF's native saveAsCopy which preserves annotations correctly
+      if (!annotationControlsRef.current?.exportPDF) {
+        setError('Failed to save PDF. Annotation controls not available.');
+        console.error('🔍 EmbedPDFViewer: Annotation controls not available');
+        return;
+      }
+
+      console.log('🔍 EmbedPDFViewer: Exporting PDF with annotations using EmbedPDF saveAsCopy...');
+      const annotatedPdfBlob = await annotationControlsRef.current.exportPDF();
+      
+      if (!annotatedPdfBlob) {
+        setError('Failed to save PDF. Could not export PDF with annotations.');
+        console.error('🔍 EmbedPDFViewer: exportPDF returned null');
+        return;
+      }
+
+      console.log('🔍 EmbedPDFViewer: Successfully exported PDF with annotations from EmbedPDF');
+      console.log('🔍 EmbedPDFViewer: Annotated PDF blob size:', annotatedPdfBlob.size, 'type:', annotatedPdfBlob.type);
+      
+      // Use the annotated PDF directly - don't flatten
+      // Flattening would remove annotations, and we want to preserve both form fields and annotations
+      let finalPdfBlob = annotatedPdfBlob;
+      console.log('🔍 EmbedPDFViewer: Using annotated PDF as-is (form fields and annotations preserved)');
+      console.log('🔍 EmbedPDFViewer: About to call onSave with finalPdfBlob, size:', finalPdfBlob.size);
+      
+      // Create preview image from the final PDF using PDF.js
+      try {
+        const pdfjsDoc = await pdfjsLib.getDocument({ data: await finalPdfBlob.arrayBuffer() }).promise;
+        const pdfjsPage = await pdfjsDoc.getPage(1);
+        const viewport = pdfjsPage.getViewport({ scale: 2.0 });
         
-        if (annotatedPdfBlob) {
-          console.log('🔍 EmbedPDFViewer: Successfully exported PDF with annotations from EmbedPDF');
+        const previewCanvas = document.createElement('canvas');
+        previewCanvas.width = viewport.width;
+        previewCanvas.height = viewport.height;
+        const ctx = previewCanvas.getContext('2d');
+        
+        if (ctx) {
+          await pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
+          const previewBlob = await new Promise<Blob>((resolve) => {
+            previewCanvas.toBlob((blob) => resolve(blob || new Blob()), 'image/png');
+          });
           
-          // Create preview image from the annotated PDF
-          const pdfjsDoc = await pdfjsLib.getDocument({ data: await annotatedPdfBlob.arrayBuffer() }).promise;
-          const pdfjsPage = await pdfjsDoc.getPage(1);
-          const viewport = pdfjsPage.getViewport({ scale: 2.0 });
-          
-          const previewCanvas = document.createElement('canvas');
-          previewCanvas.width = viewport.width;
-          previewCanvas.height = viewport.height;
-          const ctx = previewCanvas.getContext('2d');
-          
-          if (ctx) {
-            await pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
-            const previewBlob = await new Promise<Blob>((resolve) => {
-              previewCanvas.toBlob((blob) => resolve(blob || new Blob()), 'image/png');
-            });
-            
-            onSave(annotatedPdfBlob, previewBlob);
-            return;
-          }
+          // Pass the flattened PDF with annotations
+          onSave(finalPdfBlob, previewBlob);
+        } else {
+          // If preview generation fails, still save the PDF
+          console.warn('🔍 EmbedPDFViewer: Could not generate preview, saving PDF anyway');
+          const emptyPreview = new Blob([], { type: 'image/png' });
+          onSave(finalPdfBlob, emptyPreview);
         }
+      } catch (previewError) {
+        // If preview generation fails, still save the PDF
+        console.warn('🔍 EmbedPDFViewer: Preview generation failed, saving PDF anyway:', previewError);
+        const emptyPreview = new Blob([], { type: 'image/png' });
+        onSave(finalPdfBlob, emptyPreview);
       }
-      
-      // Fallback: Try to use the original PDF URL and save without annotations
-      // Or try to get annotations from annotation state and add them manually
-      console.log('🔍 EmbedPDFViewer: Annotation export failed, trying fallback methods...');
-      
-      // Try to get annotations from annotation state and render them to canvas
-      const annotations = annotationControlsRef.current?.getAnnotations();
-      console.log('🔍 EmbedPDFViewer: Annotations from state:', annotations);
-      
-      // If we have annotations, we could try to render them, but for now,
-      // let's save the PDF without annotations as a fallback
-      if (pdfUrlRef.current) {
-        console.log('🔍 EmbedPDFViewer: Saving PDF without annotations as fallback...');
-        try {
-          const response = await fetch(pdfUrlRef.current);
-          const pdfBlob = await response.blob();
-          
-          // Create preview from the original PDF
-          const pdfjsDoc = await pdfjsLib.getDocument({ data: await pdfBlob.arrayBuffer() }).promise;
-          const pdfjsPage = await pdfjsDoc.getPage(1);
-          const viewport = pdfjsPage.getViewport({ scale: 2.0 });
-          
-          const previewCanvas = document.createElement('canvas');
-          previewCanvas.width = viewport.width;
-          previewCanvas.height = viewport.height;
-          const ctx = previewCanvas.getContext('2d');
-          
-          if (ctx) {
-            await pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
-            const previewBlob = await new Promise<Blob>((resolve) => {
-              previewCanvas.toBlob((blob) => resolve(blob || new Blob()), 'image/png');
-            });
-            
-            console.warn('🔍 EmbedPDFViewer: Saved PDF without annotations (export failed)');
-            onSave(pdfBlob, previewBlob);
-            return;
-          }
-        } catch (fallbackError) {
-          console.error('🔍 EmbedPDFViewer: Fallback save also failed:', fallbackError);
-        }
-      }
-      
-      // Last resort: try drawing canvas if available
-      console.log('🔍 EmbedPDFViewer: Trying drawing canvas as last resort...');
-      const drawingCanvas = drawingCanvasRef.current?.canvas;
-      if (!drawingCanvas) {
-        setError('Failed to save PDF. Could not export annotations and no drawing canvas available.');
-        console.error('🔍 EmbedPDFViewer: All save methods failed');
-        return;
-      }
-
-      // Create a temporary canvas from PDF.js for saving
-      const tempCanvas = document.createElement('canvas');
-      const page = await pdfDocRef.current.getPage(1);
-      const viewport = page.getViewport({ scale: 2.0 });
-      
-      tempCanvas.width = viewport.width;
-      tempCanvas.height = viewport.height;
-      const context = tempCanvas.getContext('2d');
-      
-      if (!context) {
-        setError('Failed to create canvas context for saving.');
-        return;
-      }
-
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise;
-
-      await savePDFWithSignature(
-        pdfDocRef.current,
-        tempCanvas,
-        drawingCanvas,
-        onSave,
-        { crewInfo, date },
-        pdfId
-      );
     } catch (error) {
-      console.error('Error saving PDF:', error);
-      setError('Failed to save PDF with signature.');
+      console.error('🔍 EmbedPDFViewer: Error saving PDF:', error);
+      setError(error instanceof Error ? error.message : 'Failed to save PDF');
     }
-  }, [pdfDocRef.current, onSave, crewInfo, date, pdfId]);
+  }, [onSave]);
 
   // Handle downloading the original PDF
   const handleDownload = useCallback(async () => {
@@ -528,6 +565,68 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
   }));
 
   // Show loading state
+  // Debug logging
+  useEffect(() => {
+    console.log('🔍 EmbedPDFViewer: Render state:', {
+      engineLoading,
+      isLoading,
+      hasEngine: !!engine,
+      hasPdfUrl: !!pdfUrl,
+      pluginsCount: plugins.length,
+      pdfUrl: pdfUrl,
+      error: error
+    });
+    
+    // Log when all conditions are met for rendering
+    if (!engineLoading && !isLoading && engine && pdfUrl && plugins.length > 0) {
+      console.log('✅ EmbedPDFViewer: All conditions met for PDF rendering');
+    } else {
+      console.log('⏳ EmbedPDFViewer: Waiting for conditions:', {
+        waitingForEngine: engineLoading || !engine,
+        waitingForLoading: isLoading,
+        waitingForUrl: !pdfUrl,
+        waitingForPlugins: plugins.length === 0
+      });
+    }
+  }, [engineLoading, isLoading, engine, pdfUrl, plugins.length, error]);
+
+  // Monitor when EmbedPDF actually renders
+  useEffect(() => {
+    if (!engineLoading && !isLoading && engine && pdfUrl && plugins.length > 0) {
+      // Wait a bit for EmbedPDF to render
+      const timer = setTimeout(() => {
+        const viewportElement = viewportWrapperRef.current;
+        if (viewportElement) {
+          const embedPdfElements = viewportElement.querySelectorAll('[data-embedpdf], canvas, svg');
+          console.log('🔍 EmbedPDFViewer: DOM check - found', embedPdfElements.length, 'EmbedPDF elements');
+          
+          if (embedPdfElements.length === 0) {
+            console.warn('⚠️ EmbedPDFViewer: No EmbedPDF elements found in DOM - PDF may not be rendering');
+          } else {
+            console.log('✅ EmbedPDFViewer: EmbedPDF elements found in DOM');
+            embedPdfElements.forEach((el, idx) => {
+              console.log(`  Element ${idx + 1}:`, el.tagName, el.className || 'no class', {
+                width: (el as HTMLElement).offsetWidth,
+                height: (el as HTMLElement).offsetHeight,
+                visible: (el as HTMLElement).offsetWidth > 0 && (el as HTMLElement).offsetHeight > 0
+              });
+            });
+          }
+          
+          // Check container dimensions
+          const containerRect = viewportElement.getBoundingClientRect();
+          console.log('🔍 EmbedPDFViewer: Container dimensions:', {
+            width: containerRect.width,
+            height: containerRect.height,
+            hasDimensions: containerRect.width > 0 && containerRect.height > 0
+          });
+        }
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [engineLoading, isLoading, engine, pdfUrl, plugins.length]);
+
   if (engineLoading || isLoading || !engine || !pdfUrl || plugins.length === 0) {
     return (
       <div 
@@ -585,11 +684,11 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
       <div 
         className="embedpdf-viewer" 
         style={{
-          overflow: isDrawingMode ? 'hidden' : 'auto',
+          overflow: isDrawingMode ? 'hidden' : 'visible',
           width: '100%',
           height: 'auto',
           minHeight: '400px',
-          position: 'relative',
+          position: 'relative'
         }}
       >
         <div 
@@ -609,15 +708,23 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
             margin: '0 auto'
           }}
         >
-          <div ref={viewportWrapperRef} style={{ width: '100%', height: '100%' }}>
+          <div 
+            ref={viewportWrapperRef} 
+            style={{ 
+              width: '100%', 
+              height: '100%',
+              minHeight: '400px'
+            }}
+          >
             <EmbedPDF engine={engine} plugins={plugins}>
               <Viewport 
                 style={{ 
                   backgroundColor: '#f1f3f5',
                   width: '100%',
+                  height: '100%',
                   minHeight: '400px',
-                  touchAction: isDrawingMode ? 'none' : 'pan-x pan-y pinch-zoom',
-                  WebkitOverflowScrolling: 'touch' as any
+                  position: 'relative',
+                  display: 'block'
                 }}
               >
                 <Scroller
@@ -634,34 +741,36 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                           width, 
                           height,
                           position: 'relative',
-                          pointerEvents: 'auto',
-                          touchAction: isDrawingMode ? 'none' : 'pan-x pan-y pinch-zoom'
+                          pointerEvents: 'auto'
                         }}
                       >
                         {/* The RenderLayer is responsible for drawing the page */}
                         <RenderLayer pageIndex={pageIndex} scale={scale} />
                         {/* Annotation layer for drawing/signing - must be transparent */}
-                        <div
-                          style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            width: '100%',
-                            height: '100%',
-                            pointerEvents: isDrawingMode ? 'auto' : 'none',
-                            backgroundColor: 'transparent',
-                            zIndex: 1,
-                            touchAction: isDrawingMode ? 'none' : 'pan-x pan-y pinch-zoom'
-                          }}
-                        >
-                          <AnnotationLayer 
-                            pageIndex={pageIndex} 
-                            scale={scale} 
-                            pageWidth={width}
-                            pageHeight={height}
-                            rotation={rotation}
-                          />
-                        </div>
+                        {/* Only render annotation layer when in drawing mode to avoid blocking touch events */}
+                        {isDrawingMode && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              height: '100%',
+                              pointerEvents: 'auto',
+                              backgroundColor: 'transparent',
+                              zIndex: 1,
+                              touchAction: 'none'
+                            }}
+                          >
+                            <AnnotationLayer 
+                              pageIndex={pageIndex} 
+                              scale={scale} 
+                              pageWidth={width}
+                              pageHeight={height}
+                              rotation={rotation}
+                            />
+                          </div>
+                        )}
                       </div>
                     </PagePointerProvider>
                   )}
@@ -670,7 +779,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
               {/* Zoom controls component - must be inside EmbedPDF context but renders outside viewport */}
               <EmbedPDFZoomControls ref={zoomControlsRef} />
               {/* Annotation controls component - must be inside EmbedPDF context */}
-              <EmbedPDFAnnotationControls ref={annotationControlsRef} onInkModeChange={setIsDrawingMode} />
+              <EmbedPDFAnnotationControls ref={annotationControlsRef} onInkModeChange={setIsDrawingMode} engineRef={embedPdfEngineRef} />
             </EmbedPDF>
           </div>
         </div>
@@ -890,10 +999,11 @@ const EmbedPDFAnnotationControls = forwardRef<{
   isInkMode: boolean;
   getAnnotations: () => any;
   exportPDF: () => Promise<Blob | null>;
-}, { onInkModeChange?: (mode: boolean) => void }>(
-  ({ onInkModeChange }, ref) => {
+}, { onInkModeChange?: (mode: boolean) => void; engineRef?: React.RefObject<any> }>(
+  ({ onInkModeChange, engineRef }, ref) => {
     const { provides: annotationProvides, state: annotationState } = useAnnotation();
-    const { engine } = usePdfiumEngine();
+    const { provides: annotationApi } = useAnnotationCapability();
+    const { provides: exportProvides } = useExportCapability();
     const [isInkMode, setIsInkMode] = useState(false);
 
     // Update ink mode state and notify parent (check if activeToolId is 'ink' or similar)
@@ -907,78 +1017,222 @@ const EmbedPDFAnnotationControls = forwardRef<{
       }
     }, [annotationState?.activeToolId, onInkModeChange]);
 
-    // Export PDF with annotations
+    // Export PDF with annotations using EmbedPDF's Export plugin
     const exportPDF = useCallback(async (): Promise<Blob | null> => {
-      if (!engine) {
-        console.warn('🔍 exportPDF: Engine not available');
+      if (!exportProvides) {
+        console.warn('🔍 exportPDF: Export provides not available');
         return null;
       }
-      
+
       try {
-        console.log('🔍 exportPDF: Engine available, trying to export...');
-        console.log('🔍 exportPDF: Engine object:', engine);
-        console.log('🔍 exportPDF: Engine keys:', Object.keys(engine));
-        
-        // Type assertion for runtime checks
-        const engineAny = engine as any;
-        
-        // Try to get the document from the engine and save it with annotations
-        // Annotations should be part of the document when saved
-        if (typeof engineAny.saveDocument === 'function') {
-          console.log('🔍 exportPDF: Trying engine.saveDocument()');
-          const pdfBytes = await engineAny.saveDocument();
-          return new Blob([pdfBytes], { type: 'application/pdf' });
-        } else if (typeof engineAny.exportDocument === 'function') {
-          console.log('🔍 exportPDF: Trying engine.exportDocument()');
-          const pdfBytes = await engineAny.exportDocument();
-          return new Blob([pdfBytes], { type: 'application/pdf' });
-        } else if (typeof engineAny.getDocumentBytes === 'function') {
-          console.log('🔍 exportPDF: Trying engine.getDocumentBytes()');
-          const pdfBytes = await engineAny.getDocumentBytes();
-          return new Blob([pdfBytes], { type: 'application/pdf' });
-        } else if (engineAny.documentManager) {
-          console.log('🔍 exportPDF: Trying documentManager');
-          const docManager = engineAny.documentManager;
-          if (typeof docManager.saveDocument === 'function') {
-            const pdfBytes = await docManager.saveDocument();
-            return new Blob([pdfBytes], { type: 'application/pdf' });
-          }
-        } else if (engineAny.documents) {
-          console.log('🔍 exportPDF: Trying engine.documents');
-          const documents = engineAny.documents;
-          if (documents && documents.length > 0) {
-            const doc = documents[0];
-            console.log('🔍 exportPDF: Document found, keys:', Object.keys(doc));
-            if (typeof doc.save === 'function') {
-              console.log('🔍 exportPDF: Trying doc.save()');
-              const pdfBytes = await doc.save();
-              return new Blob([pdfBytes], { type: 'application/pdf' });
-            } else if (typeof doc.export === 'function') {
-              console.log('🔍 exportPDF: Trying doc.export()');
-              const pdfBytes = await doc.export();
-              return new Blob([pdfBytes], { type: 'application/pdf' });
-            } else if (typeof doc.getBytes === 'function') {
-              console.log('🔍 exportPDF: Trying doc.getBytes()');
-              const pdfBytes = await doc.getBytes();
-              return new Blob([pdfBytes], { type: 'application/pdf' });
+        console.log('🔍 exportPDF: Using EmbedPDF Export plugin...');
+        // Get annotations from all pages to see what we have
+        let allAnnotations: any[] = [];
+        if (annotationProvides && annotationState?.pages) {
+          const annotationProvidesAny = annotationProvides as any;
+          const pageIndices = Object.keys(annotationState.pages).map(Number);
+          console.log('🔍 exportPDF: Checking annotations on pages:', pageIndices);
+          
+          for (const pageIndex of pageIndices) {
+            try {
+              if (typeof annotationProvidesAny.getPageAnnotations === 'function') {
+                const pageAnnotationsResult = annotationProvidesAny.getPageAnnotations({ pageIndex });
+                console.log(`🔍 exportPDF: Page ${pageIndex} annotations result type:`, typeof pageAnnotationsResult);
+                
+                // Handle PdfTask (has toPromise method) or Promise
+                let pageAnnotations: any;
+                if (pageAnnotationsResult && typeof pageAnnotationsResult.toPromise === 'function') {
+                  pageAnnotations = await pageAnnotationsResult.toPromise();
+                } else {
+                  pageAnnotations = await pageAnnotationsResult;
+                }
+                
+                console.log(`🔍 exportPDF: Page ${pageIndex} annotations:`, pageAnnotations);
+                if (Array.isArray(pageAnnotations)) {
+                  allAnnotations.push(...pageAnnotations);
+                  console.log(`🔍 exportPDF: Found ${pageAnnotations.length} annotations on page ${pageIndex}`);
+                }
+              }
+            } catch (error) {
+              console.error(`🔍 exportPDF: Error getting annotations for page ${pageIndex}:`, error);
             }
           }
         }
         
-        console.warn('🔍 exportPDF: No export method found. Engine structure:', {
-          hasSaveDocument: typeof engineAny.saveDocument === 'function',
-          hasExportDocument: typeof engineAny.exportDocument === 'function',
-          hasGetDocumentBytes: typeof engineAny.getDocumentBytes === 'function',
-          hasDocumentManager: !!engineAny.documentManager,
-          hasDocuments: !!engineAny.documents,
-          engineKeys: Object.keys(engine)
+        // Log detailed annotation state
+        const pagesData = annotationState?.pages || {};
+        const pagesWithAnnotations: any = {};
+        Object.keys(pagesData).forEach(pageKey => {
+          const pageData = pagesData[pageKey as any];
+          if (pageData && Array.isArray(pageData)) {
+            pagesWithAnnotations[pageKey] = pageData.length;
+          }
         });
-        return null;
+        
+        console.log('🔍 exportPDF: Annotation state before export:', {
+          hasPendingChanges: annotationState?.hasPendingChanges,
+          pagesCount: Object.keys(pagesData).length,
+          annotationsCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0,
+          allAnnotationsFound: allAnnotations.length,
+          pagesWithAnnotationCounts: pagesWithAnnotations,
+          selectedUid: annotationState?.selectedUid,
+          pages: pagesData,
+          byUid: annotationState?.byUid
+        });
+        
+        // Wait for any pending changes to be processed first
+        if (annotationState?.hasPendingChanges) {
+          console.log('🔍 exportPDF: Waiting for pending annotation changes to be processed...');
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        
+        // Commit annotations to the PDF document before exporting
+        // This ensures all annotation changes are saved to the engine
+        if (annotationApi && typeof annotationApi.commit === 'function') {
+          console.log('🔍 exportPDF: Committing annotations to PDF document...');
+          console.log('🔍 exportPDF: Annotation state before commit:', {
+            hasPendingChanges: annotationState?.hasPendingChanges,
+            annotationsCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0,
+            pagesWithAnnotations: pagesWithAnnotations
+          });
+          try {
+            await annotationApi.commit();
+            console.log('🔍 exportPDF: Annotations committed successfully');
+            
+            // Wait longer after commit to ensure the engine has processed the changes
+            // This is important because the commit is asynchronous and the engine needs time
+            // to write the annotations to the PDF document structure
+            console.log('🔍 exportPDF: Waiting for engine to process committed annotations...');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log('🔍 exportPDF: Wait complete, proceeding with export');
+          } catch (commitError) {
+            console.error('🔍 exportPDF: Error committing annotations:', commitError);
+          }
+        } else if (annotationProvides) {
+          // Fallback: try commit on annotationProvides
+          const annotationProvidesAny = annotationProvides as any;
+          if (typeof annotationProvidesAny.commit === 'function') {
+            console.log('🔍 exportPDF: Committing annotations (via annotationProvides)...');
+            await annotationProvidesAny.commit();
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } else {
+            console.warn('🔍 exportPDF: No commit method found on annotationProvides or annotationApi');
+          }
+        } else {
+          console.warn('🔍 exportPDF: No annotationApi or annotationProvides available for commit');
+          // If no commit method, still wait a bit for any pending changes
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        const exportProvidesAny = exportProvides as any;
+        console.log('🔍 exportPDF: Export provides keys:', Object.keys(exportProvidesAny));
+        
+        // The Export plugin provides saveAsCopy method - this is the recommended way to export PDFs with annotations
+        if (typeof exportProvidesAny.saveAsCopy === 'function') {
+          console.log('🔍 exportPDF: Calling exportProvides.saveAsCopy()...');
+          const saveResult = exportProvidesAny.saveAsCopy();
+          console.log('🔍 exportPDF: saveAsCopy returned, type:', typeof saveResult);
+          
+          // Handle PdfTask (has toPromise method) or Promise
+          let pdfBytes: any;
+          if (saveResult && typeof saveResult.toPromise === 'function') {
+            console.log('🔍 exportPDF: saveAsCopy returned PdfTask, calling toPromise()...');
+            pdfBytes = await saveResult.toPromise();
+          } else {
+            console.log('🔍 exportPDF: saveAsCopy returned Promise directly');
+            pdfBytes = await saveResult;
+          }
+          
+          console.log('🔍 exportPDF: PDF bytes received, type:', typeof pdfBytes);
+          console.log('🔍 exportPDF: PDF bytes instanceof ArrayBuffer:', pdfBytes instanceof ArrayBuffer);
+          console.log('🔍 exportPDF: PDF bytes instanceof Uint8Array:', pdfBytes instanceof Uint8Array);
+          console.log('🔍 exportPDF: PDF bytes length:', pdfBytes?.byteLength || pdfBytes?.length || 'unknown');
+          
+          // Convert to Blob - handle both ArrayBuffer and Uint8Array
+          if (pdfBytes instanceof ArrayBuffer) {
+            console.log('🔍 exportPDF: Creating Blob from ArrayBuffer');
+            return new Blob([pdfBytes], { type: 'application/pdf' });
+          } else if (pdfBytes instanceof Uint8Array) {
+            console.log('🔍 exportPDF: Creating Blob from Uint8Array');
+            // Create a new Uint8Array to ensure we have a proper copy
+            const bytes = new Uint8Array(pdfBytes);
+            return new Blob([bytes], { type: 'application/pdf' });
+          } else {
+            console.warn('🔍 exportPDF: Unexpected return type from saveAsCopy:', typeof pdfBytes);
+            // Try to convert to ArrayBuffer if it's something else
+            const arrayBuffer = await pdfBytes;
+            return new Blob([arrayBuffer], { type: 'application/pdf' });
+          }
+        } else {
+          console.warn('🔍 exportPDF: exportProvides.saveAsCopy is not available. Available methods:', Object.keys(exportProvidesAny));
+          
+          // Fallback: Try using engine.saveAsCopy directly (like the user's example)
+          if (engineRef?.current) {
+            console.log('🔍 exportPDF: Trying fallback - using engine.saveAsCopy directly...');
+            try {
+              const engine = engineRef.current;
+              
+              // Get the document from the engine
+              // The engine should have a way to get the current document
+              let document: any = null;
+              
+              // Try different ways to get the document from the engine
+              if (typeof engine.getDocument === 'function') {
+                document = engine.getDocument();
+              } else if (engine.document) {
+                document = engine.document;
+              } else if (typeof engine.getPdfDocument === 'function') {
+                document = engine.getPdfDocument();
+              } else if (engine.pdfDocument) {
+                document = engine.pdfDocument;
+              }
+              
+              if (document && typeof engine.saveAsCopy === 'function') {
+                console.log('🔍 exportPDF: Found engine and document, calling engine.saveAsCopy...');
+                const saveResult = engine.saveAsCopy(document);
+                
+                // Handle PdfTask (has toPromise method) or Promise
+                let pdfBytes: any;
+                if (saveResult && typeof saveResult.toPromise === 'function') {
+                  console.log('🔍 exportPDF: saveAsCopy returned PdfTask, calling toPromise()...');
+                  pdfBytes = await saveResult.toPromise();
+                } else {
+                  console.log('🔍 exportPDF: saveAsCopy returned Promise directly');
+                  pdfBytes = await saveResult;
+                }
+                
+                console.log('✅ exportPDF: Successfully got PDF bytes from engine.saveAsCopy');
+                
+                // Convert to Blob
+                if (pdfBytes instanceof ArrayBuffer) {
+                  return new Blob([pdfBytes], { type: 'application/pdf' });
+                } else if (pdfBytes instanceof Uint8Array) {
+                  // Create a new Uint8Array to ensure proper type
+                  const bytes = new Uint8Array(pdfBytes);
+                  return new Blob([bytes], { type: 'application/pdf' });
+                } else {
+                  // Try to convert
+                  const arrayBuffer = await pdfBytes;
+                  return new Blob([arrayBuffer], { type: 'application/pdf' });
+                }
+              } else {
+                console.warn('🔍 exportPDF: Engine or document not available for fallback. Engine methods:', Object.keys(engine || {}));
+              }
+            } catch (engineError) {
+              console.error('🔍 exportPDF: Error using engine.saveAsCopy fallback:', engineError);
+            }
+          } else {
+            console.warn('🔍 exportPDF: Engine ref not available for fallback');
+          }
+          
+          return null;
+        }
       } catch (error) {
         console.error('🔍 exportPDF: Error exporting PDF with annotations:', error);
+        console.error('🔍 exportPDF: Error stack:', error instanceof Error ? error.stack : 'No stack trace');
         return null;
       }
-    }, [engine]);
+    }, [exportProvides, annotationState, engineRef]);
 
     // Debug: Log available methods and state
     useEffect(() => {

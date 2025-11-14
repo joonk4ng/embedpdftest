@@ -211,31 +211,59 @@
 }
 
 /* Mobile touch scrolling support */
+/* Let EmbedPDF's Scroller handle touch events - just ensure smooth scrolling on iOS */
 .embedpdf-viewer {
   -webkit-overflow-scrolling: touch !important;
-  touch-action: pan-x pan-y pinch-zoom !important;
 }
 
-/* Ensure Viewport allows scrolling on mobile */
-.embedpdf-viewer [data-embedpdf-viewport],
-.embedpdf-viewer > div > div > div[style*="background"] {
-  touch-action: pan-x pan-y pinch-zoom !important;
+/* Ensure Viewport allows scrolling on mobile - but don't override if Scroller handles it */
+.embedpdf-viewer [data-embedpdf-viewport] {
+  /* Let EmbedPDF handle touch events - don't override */
   -webkit-overflow-scrolling: touch !important;
-  overflow: auto !important;
 }
 
-/* Ensure Scroller component allows touch scrolling */
+/* Ensure Scroller component allows touch scrolling at all zoom levels */
+/* Let EmbedPDF's Scroller handle touch events - just ensure iOS smooth scrolling */
 .embedpdf-viewer [data-embedpdf-scroller],
 .embedpdf-viewer [class*="scroller"],
 .embedpdf-viewer [class*="Scroller"] {
-  touch-action: pan-x pan-y pinch-zoom !important;
   -webkit-overflow-scrolling: touch !important;
-  overflow: auto !important;
+  /* Ensure scrolling works when zoomed in */
+  overscroll-behavior: contain;
 }
 
-/* Allow scrolling on page containers */
-.embedpdf-viewer [style*="position: relative"][style*="width"] {
+/* Ensure scrolling works at all zoom levels - when zoomed in, content should be pannable */
+/* Let EmbedPDF handle touch events - don't override */
+
+/* Ensure annotation layer doesn't block touch events when not active */
+.embedpdf-viewer [data-embedpdf-annotation-layer]:not([data-active="true"]),
+.embedpdf-viewer [class*="annotation"]:not([data-active="true"]) {
+  pointer-events: none !important;
   touch-action: pan-x pan-y pinch-zoom !important;
+}
+
+/* Allow scrolling on page containers at all zoom levels */
+/* Let EmbedPDF handle touch events - don't override */
+
+/* Ensure page content is scrollable when zoomed in */
+/* Don't override touch-action on page containers - let Scroller handle it */
+.embedpdf-viewer [style*="position: relative"] {
+  /* Prevent text selection during panning */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* When zoomed in, ensure the scrollable area updates */
+.embedpdf-viewer [data-embedpdf-viewport],
+.embedpdf-viewer [class*="viewport"],
+.embedpdf-viewer [class*="Viewport"] {
+  /* Ensure smooth scrolling at all zoom levels */
+  scroll-behavior: auto;
+  /* Ensure it has a height for scrolling to work */
+  height: 100% !important;
+  min-height: 400px !important;
+  /* Enable touch scrolling on iOS */
+  -webkit-overflow-scrolling: touch !important;
 }
 
 /* Mobile responsive */
