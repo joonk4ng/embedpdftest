@@ -62,5 +62,10 @@ export async function deletePDF(id: string): Promise<void> {
   await pdfStorageDB.pdfs.delete(id);
 }
 
+export async function clearAllPDFs(): Promise<void> {
+  await pdfStorageDB.pdfs.clear();
+  console.log('✅ PDF Storage: All PDFs cleared from IndexedDB');
+}
+
 
 

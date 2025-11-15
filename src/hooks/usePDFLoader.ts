@@ -73,23 +73,101 @@ export const usePDFLoader = (
             throw new Error('PDF not found in storage');
           }
           pdfBlobToUse = storedPDF.pdf;
-          shouldFillForm = true; // May need to fill form if loading from storage
+          
+          // Verify the PDF is actually filled by checking with pdf-lib
+          // Create a copy of the blob to avoid consuming it
+          const verifyBlob = pdfBlobToUse.slice(0);
+          try {
+            const testPdfDoc = await PDFLib.PDFDocument.load(await verifyBlob.arrayBuffer());
+            const testForm = testPdfDoc.getForm();
+            const testFields = testForm.getFields();
+            let filledCount = 0;
+            const filledFields: string[] = [];
+            testFields.forEach(field => {
+              try {
+                const fieldName = field.getName();
+                if (field.constructor.name === 'PDFTextField') {
+                  const text = (field as any).getText();
+                  if (text && text.trim().length > 0) {
+                    filledCount++;
+                    filledFields.push(`${fieldName}="${text}"`);
+                  }
+                } else if (field.constructor.name === 'PDFCheckBox') {
+                  if ((field as any).isChecked()) {
+                    filledCount++;
+                    filledFields.push(`${fieldName}=checked`);
+                  }
+                }
+              } catch (e) {
+                // Ignore field errors
+              }
+            });
+            console.log(`🔍 usePDFLoader: PDF from IndexedDB has ${filledCount} filled fields out of ${testFields.length} total fields`);
+            if (filledCount > 0) {
+              console.log('✅ usePDFLoader: PDF from IndexedDB is FILLED. Sample filled fields:', filledFields.slice(0, 5));
+            } else if (testFields.length > 0) {
+              console.error('❌ usePDFLoader: PDF from IndexedDB appears to be UNFILLED! This is the original template.');
+              console.error('❌ usePDFLoader: This means the PDF generation did not work correctly.');
+            }
+          } catch (verifyError) {
+            console.warn('⚠️ usePDFLoader: Could not verify if PDF is filled:', verifyError);
+          }
+          
+          // PDFs stored in IndexedDB by usePDFGeneration are already filled
+          // Skip reloading with pdf-lib to avoid corrupting the blob
+          shouldFillForm = false;
+          console.log('🔍 usePDFLoader: Loaded PDF from IndexedDB, size:', pdfBlobToUse.size, '(assuming already filled)');
         } else {
           throw new Error('Either pdfId or pdfBlob must be provided');
         }
 
-        // Verify the PDF has form fields and check if they're filled
-        // This helps ensure we're displaying the correct filled PDF
-        // Skip this step when pdfBlob prop is provided (assume it's already filled)
-        let finalPdfBlob: Blob = pdfBlobToUse;
+        // Validate the PDF blob before proceeding
+        if (!pdfBlobToUse || pdfBlobToUse.size === 0) {
+          throw new Error('PDF blob is empty or invalid');
+        }
+
+        // Read the ArrayBuffer once and reuse it to avoid consuming the blob
+        // This is important because some blob types can only be read once
+        console.log('🔍 usePDFLoader: Reading PDF blob ArrayBuffer (size:', pdfBlobToUse.size, 'bytes)...');
+        const pdfArrayBufferOriginal = await pdfBlobToUse.arrayBuffer();
+        console.log('✅ usePDFLoader: PDF ArrayBuffer read successfully, size:', pdfArrayBufferOriginal.byteLength, 'bytes');
+        
+        // Create a defensive copy of the ArrayBuffer to prevent it from being consumed
+        // This ensures we always have a valid reference to the PDF data
+        const pdfArrayBuffer = pdfArrayBufferOriginal.slice(0);
+        console.log('✅ usePDFLoader: Created defensive copy of ArrayBuffer, size:', pdfArrayBuffer.byteLength, 'bytes');
+        
+        if (pdfArrayBuffer.byteLength === 0) {
+          throw new Error('PDF ArrayBuffer is empty - blob may have been consumed or corrupted');
+        }
+
+        // Verify PDF header to ensure blob is valid
+        try {
+          const testBytes = new Uint8Array(pdfArrayBuffer.slice(0, 4));
+          const pdfHeader = String.fromCharCode(...testBytes);
+          if (pdfHeader !== '%PDF') {
+            console.error('❌ usePDFLoader: PDF blob does not start with %PDF header:', pdfHeader);
+            throw new Error('Invalid PDF format: blob does not contain valid PDF header');
+          }
+          console.log('✅ usePDFLoader: PDF blob header verified:', pdfHeader);
+        } catch (headerError) {
+          if (headerError instanceof Error && headerError.message.includes('Invalid PDF format')) {
+            throw headerError;
+          }
+          console.warn('⚠️ usePDFLoader: Could not verify PDF header:', headerError);
+        }
+
+        // Start with the blob recreated from ArrayBuffer
+        let finalPdfBlob = new Blob([pdfArrayBuffer], { type: 'application/pdf' });
+        console.log('✅ usePDFLoader: Created fresh PDF blob from ArrayBuffer, size:', finalPdfBlob.size, 'bytes');
         
         console.log('🔍 usePDFLoader: Starting PDF load, initial blob size:', finalPdfBlob.size);
         
         // Only verify and potentially fill form fields when loading from pdfId
         if (shouldFillForm) {
           try {
-            // Load with pdf-lib to verify form fields are filled
-            const pdfDoc = await PDFLib.PDFDocument.load(await pdfBlobToUse.arrayBuffer());
+            // Load with pdf-lib to verify form fields are filled (use the ArrayBuffer we already read)
+            const pdfDoc = await PDFLib.PDFDocument.load(pdfArrayBuffer);
             const form = pdfDoc.getForm();
             const fields = form.getFields();
             
@@ -230,53 +308,46 @@ export const usePDFLoader = (
               console.log('🔍 usePDFLoader: Using PDF with form structure preserved for annotations');
             } catch (saveError) {
               console.error('⚠️ usePDFLoader: Could not save PDF:', saveError);
-              // Fallback to original if save fails
-              finalPdfBlob = pdfBlobToUse;
+              // Fallback to original blob if save fails
+              finalPdfBlob = new Blob([pdfArrayBuffer], { type: 'application/pdf' });
             }
           } catch (pdfLibError) {
             console.warn('🔍 usePDFLoader: Could not verify form fields with pdf-lib, continuing anyway:', pdfLibError);
-            // Continue with the PDF even if we can't verify fields
-            // Ensure finalPdfBlob is still set
-            if (!finalPdfBlob) {
-              finalPdfBlob = pdfBlobToUse;
-            }
+            // Continue with the PDF blob we already created
           }
         } else {
-          // When pdfBlob prop is provided, skip form verification/filling
-          console.log('🔍 usePDFLoader: Using provided PDF blob directly (skipping form verification)');
+          // When pdfBlob prop is provided or loading from IndexedDB, skip form verification/filling
+          // PDFs from IndexedDB are already filled by usePDFGeneration
+          console.log('🔍 usePDFLoader: Using PDF blob directly (skipping form verification - already filled)');
         }
 
-        // Create object URL for the PDF blob
+        // Final validation before creating URL
         if (!finalPdfBlob || finalPdfBlob.size === 0) {
-          throw new Error('PDF blob is empty or invalid');
+          throw new Error('PDF blob is empty or invalid after processing');
         }
         
         // Validate PDF blob type
         if (finalPdfBlob.type && finalPdfBlob.type !== 'application/pdf') {
           console.warn('⚠️ usePDFLoader: PDF blob type is not application/pdf:', finalPdfBlob.type);
+          // Set correct MIME type if missing
+          if (!finalPdfBlob.type) {
+            finalPdfBlob = new Blob([pdfArrayBuffer], { type: 'application/pdf' });
+            console.log('🔍 usePDFLoader: Set PDF blob MIME type to application/pdf');
+          }
         }
         
         console.log('🔍 usePDFLoader: Final PDF blob before creating URL, size:', finalPdfBlob.size, 'type:', finalPdfBlob.type);
         console.log('🔍 usePDFLoader: Creating blob URL for PDF...');
         
-        // Verify the blob is valid by trying to read a small portion
-        try {
-          const testSlice = finalPdfBlob.slice(0, 4);
-          const testArray = await testSlice.arrayBuffer();
-          const testBytes = new Uint8Array(testArray);
-          const pdfHeader = String.fromCharCode(...testBytes);
-          if (pdfHeader !== '%PDF') {
-            console.warn('⚠️ usePDFLoader: PDF blob does not start with %PDF header:', pdfHeader);
-          } else {
-            console.log('✅ usePDFLoader: PDF blob header verified:', pdfHeader);
-          }
-        } catch (headerError) {
-          console.warn('⚠️ usePDFLoader: Could not verify PDF header:', headerError);
+        // Create a fresh blob URL (revoke old one if it exists to prevent caching issues)
+        if (currentPdfUrl) {
+          URL.revokeObjectURL(currentPdfUrl);
         }
-        
         const url = URL.createObjectURL(finalPdfBlob);
         currentPdfUrl = url;
         pdfUrlRef.current = url;
+        
+        console.log('🔍 usePDFLoader: Created new blob URL:', url, '(old URL revoked if existed)');
         
         console.log('🔍 usePDFLoader: Blob URL created:', url);
         console.log('🔍 usePDFLoader: Testing blob URL accessibility...');
@@ -302,18 +373,31 @@ export const usePDFLoader = (
         setPdfUrl(url);
         console.log('🔍 usePDFLoader: PDF URL set, ready to load into EmbedPDF');
 
-        // Load PDF.js document for saving functionality
-        const arrayBuffer = await finalPdfBlob.arrayBuffer();
+        // Load PDF.js document for saving functionality using the ArrayBuffer we already read
+        // Create a copy of the ArrayBuffer for PDF.js to prevent any potential consumption
+        const pdfArrayBufferForPdfJs = pdfArrayBuffer.slice(0);
+        console.log('🔍 usePDFLoader: Loading PDF.js document from ArrayBuffer (size:', pdfArrayBufferForPdfJs.byteLength, 'bytes)...');
         const loadingTask = pdfjsLib.getDocument({ 
-          data: arrayBuffer,
+          data: pdfArrayBufferForPdfJs,
           useSystemFonts: true,
           disableFontFace: false,
         });
         const pdfDoc = await loadingTask.promise;
         pdfDocRef.current = pdfDoc;
+        console.log('✅ usePDFLoader: PDF.js document loaded successfully, pages:', pdfDoc.numPages);
+        
+        // Verify the original ArrayBuffer is still intact after PDF.js loading
+        console.log('🔍 usePDFLoader: Verifying original ArrayBuffer after PDF.js load, size:', pdfArrayBuffer.byteLength, 'bytes');
+        if (pdfArrayBuffer.byteLength === 0) {
+          console.error('❌ usePDFLoader: Original ArrayBuffer was consumed! This should not happen.');
+          throw new Error('PDF ArrayBuffer was consumed during PDF.js loading');
+        }
 
         // Create plugins with the PDF URL
+        // Note: Using URL type as it's the most reliable for EmbedPDF
+        // The blob URL has been validated and is accessible
         console.log('🔍 usePDFLoader: Creating plugins with URL:', url, 'ID:', effectivePdfId);
+        console.log('🔍 usePDFLoader: Original PDF ArrayBuffer size (for reference):', pdfArrayBuffer.byteLength, 'bytes');
         const pdfPlugins = [
           createPluginRegistration(LoaderPluginPackage, {
             loadingOptions: {
@@ -342,6 +426,27 @@ export const usePDFLoader = (
         
         setPlugins(pdfPlugins);
         console.log('✅ usePDFLoader: Plugins created and set, count:', pdfPlugins.length);
+        // Log the loader plugin configuration in detail
+        const loaderPlugin = pdfPlugins[0];
+        console.log('✅ usePDFLoader: Loader plugin full structure:', JSON.stringify(loaderPlugin, (_key, value) => {
+          // Skip circular references and functions
+          if (typeof value === 'function') return '[Function]';
+          if (value instanceof Error) return value.message;
+          return value;
+        }, 2));
+        
+        // Try to access configuration in different ways
+        const config1 = (loaderPlugin as any)?.config;
+        const config2 = (loaderPlugin as any)?.options;
+        const config3 = (loaderPlugin as any)?.pluginConfig;
+        console.log('✅ usePDFLoader: Config access attempts:', {
+          hasConfig: !!config1,
+          hasOptions: !!config2,
+          hasPluginConfig: !!config3,
+          config1: config1,
+          config2: config2,
+          config3: config3
+        });
         setIsLoading(false);
         console.log('✅ usePDFLoader: Loading state set to false, PDF should render now');
       } catch (err) {

@@ -70,6 +70,16 @@ export const EmbedPDFAnnotationControls = forwardRef<
               if (Array.isArray(pageAnnotations)) {
                 allAnnotations.push(...pageAnnotations);
                 console.log(`🔍 exportPDF: Found ${pageAnnotations.length} annotations on page ${pageIndex}`);
+                // Log annotation details to check their type and properties
+                pageAnnotations.forEach((ann, idx) => {
+                  console.log(`🔍 exportPDF: Annotation ${idx} on page ${pageIndex}:`, {
+                    type: ann?.type || ann?.subtype || 'unknown',
+                    id: ann?.id || ann?.uid || 'no-id',
+                    hasAppearance: !!ann?.appearance,
+                    isPermanent: ann?.permanent !== false, // Check if explicitly marked as temporary
+                    properties: Object.keys(ann || {})
+                  });
+                });
               }
             }
           } catch (error) {
@@ -88,6 +98,16 @@ export const EmbedPDFAnnotationControls = forwardRef<
         }
       });
       
+      // Check annotation types and properties
+      const annotationTypes: string[] = [];
+      const annotationSubtypes: string[] = [];
+      if (annotationState?.byUid) {
+        Object.values(annotationState.byUid).forEach((ann: any) => {
+          if (ann?.type) annotationTypes.push(ann.type);
+          if (ann?.subtype) annotationSubtypes.push(ann.subtype);
+        });
+      }
+      
       console.log('🔍 exportPDF: Annotation state before export:', {
         hasPendingChanges: annotationState?.hasPendingChanges,
         pagesCount: Object.keys(pagesData).length,
@@ -95,53 +115,193 @@ export const EmbedPDFAnnotationControls = forwardRef<
         allAnnotationsFound: allAnnotations.length,
         pagesWithAnnotationCounts: pagesWithAnnotations,
         selectedUid: annotationState?.selectedUid,
+        annotationTypes: [...new Set(annotationTypes)],
+        annotationSubtypes: [...new Set(annotationSubtypes)],
         pages: pagesData,
         byUid: annotationState?.byUid
       });
       
-      // Wait for any pending changes to be processed first
-      if (annotationState?.hasPendingChanges) {
-        console.log('🔍 exportPDF: Waiting for pending annotation changes to be processed...');
-        await new Promise(resolve => setTimeout(resolve, 300));
+      // CRITICAL: Wait for annotations to be fully created and committed
+      // Annotations might still be in the process of being created when export is called
+      // We need to wait for hasPendingChanges to be false and ensure annotations are in the state
+      console.log('🔍 exportPDF: Waiting for annotations to be fully created...');
+      let waitAttempts = 0;
+      const maxWaitAttempts = 20; // Wait up to 2 seconds (20 * 100ms)
+      
+      while (waitAttempts < maxWaitAttempts) {
+        const currentHasPendingChanges = annotationState?.hasPendingChanges;
+        const currentAnnotationCount = annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0;
+        
+        if (!currentHasPendingChanges && currentAnnotationCount > 0) {
+          console.log(`✅ exportPDF: Annotations ready after ${waitAttempts * 100}ms (${currentAnnotationCount} annotations)`);
+          break;
+        }
+        
+        if (waitAttempts === 0) {
+          console.log('🔍 exportPDF: Waiting for annotations to be ready...', {
+            hasPendingChanges: currentHasPendingChanges,
+            annotationCount: currentAnnotationCount
+          });
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitAttempts++;
       }
       
-      // Commit annotations to the PDF document before exporting
-      // This ensures all annotation changes are saved to the engine
-      if (annotationApi && typeof annotationApi.commit === 'function') {
-        console.log('🔍 exportPDF: Committing annotations to PDF document...');
-        console.log('🔍 exportPDF: Annotation state before commit:', {
-          hasPendingChanges: annotationState?.hasPendingChanges,
-          annotationsCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0,
-          pagesWithAnnotations: pagesWithAnnotations
-        });
-        try {
-          await annotationApi.commit();
-          console.log('🔍 exportPDF: Annotations committed successfully');
+      // Re-check annotations after waiting
+      if (annotationState?.byUid) {
+        const finalAnnotationCount = Object.keys(annotationState.byUid).length;
+        console.log('🔍 exportPDF: Final annotation count after waiting:', finalAnnotationCount);
+        
+        // Re-query annotations if we have them in state but didn't find them via getPageAnnotations
+        if (finalAnnotationCount > 0 && allAnnotations.length === 0) {
+          console.log('🔍 exportPDF: Re-querying annotations after wait...');
+          allAnnotations = [];
+          const annotationProvidesAny = annotationProvides as any;
+          const pageIndices = Object.keys(annotationState.pages || {}).map(Number);
           
-          // Wait longer after commit to ensure the engine has processed the changes
-          // This is important because the commit is asynchronous and the engine needs time
-          // to write the annotations to the PDF document structure
-          console.log('🔍 exportPDF: Waiting for engine to process committed annotations...');
-          await new Promise(resolve => setTimeout(resolve, 500));
-          console.log('🔍 exportPDF: Wait complete, proceeding with export');
-        } catch (commitError) {
-          console.error('🔍 exportPDF: Error committing annotations:', commitError);
+          for (const pageIndex of pageIndices) {
+            try {
+              if (typeof annotationProvidesAny.getPageAnnotations === 'function') {
+                const pageAnnotationsResult = annotationProvidesAny.getPageAnnotations({ pageIndex });
+                let pageAnnotations: any;
+                if (pageAnnotationsResult && typeof pageAnnotationsResult.toPromise === 'function') {
+                  pageAnnotations = await pageAnnotationsResult.toPromise();
+                } else {
+                  pageAnnotations = await pageAnnotationsResult;
+                }
+                
+                if (Array.isArray(pageAnnotations)) {
+                  allAnnotations.push(...pageAnnotations);
+                  console.log(`🔍 exportPDF: Re-found ${pageAnnotations.length} annotations on page ${pageIndex}`);
+                }
+              }
+            } catch (error) {
+              console.error(`🔍 exportPDF: Error re-querying annotations for page ${pageIndex}:`, error);
+            }
+          }
         }
-      } else if (annotationProvides) {
-        // Fallback: try commit on annotationProvides
+      }
+      
+      // CRITICAL: Commit annotations to the PDF document before exporting
+      // Even though autoCommit is enabled, we need to explicitly commit before export
+      // to ensure all annotations are written to the PDF structure
+      console.log('🔍 exportPDF: Preparing to commit annotations before export...');
+      console.log('🔍 exportPDF: Annotation state before commit:', {
+        hasPendingChanges: annotationState?.hasPendingChanges,
+        annotationsCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0,
+        pagesWithAnnotations: pagesWithAnnotations,
+        allAnnotationsFound: allAnnotations.length
+      });
+      
+      // Try multiple commit methods to ensure annotations are saved
+      let commitSuccess = false;
+      
+      // Method 1: Use annotationApi.commit() (preferred)
+      if (annotationApi && typeof annotationApi.commit === 'function') {
+        try {
+          console.log('🔍 exportPDF: Committing annotations using annotationApi.commit()...');
+          const commitResult = annotationApi.commit();
+          // Handle Task (has toPromise method) or Promise
+          if (commitResult && typeof commitResult.toPromise === 'function') {
+            await commitResult.toPromise();
+          } else if (commitResult && typeof (commitResult as any).then === 'function') {
+            await (commitResult as any);
+          }
+          commitSuccess = true;
+          console.log('✅ exportPDF: Annotations committed successfully via annotationApi');
+        } catch (commitError) {
+          console.error('❌ exportPDF: Error committing via annotationApi:', commitError);
+        }
+      }
+      
+      // Method 2: Try annotationProvides.commit() (fallback)
+      if (!commitSuccess && annotationProvides) {
         const annotationProvidesAny = annotationProvides as any;
         if (typeof annotationProvidesAny.commit === 'function') {
-          console.log('🔍 exportPDF: Committing annotations (via annotationProvides)...');
-          await annotationProvidesAny.commit();
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } else {
-          console.warn('🔍 exportPDF: No commit method found on annotationProvides or annotationApi');
+          try {
+            console.log('🔍 exportPDF: Committing annotations using annotationProvides.commit()...');
+            const commitResult = annotationProvidesAny.commit();
+            if (commitResult && typeof commitResult.then === 'function') {
+              await commitResult;
+            } else if (commitResult && typeof commitResult.toPromise === 'function') {
+              await commitResult.toPromise();
+            }
+            commitSuccess = true;
+            console.log('✅ exportPDF: Annotations committed successfully via annotationProvides');
+          } catch (commitError) {
+            console.error('❌ exportPDF: Error committing via annotationProvides:', commitError);
+          }
         }
-      } else {
-        console.warn('🔍 exportPDF: No annotationApi or annotationProvides available for commit');
-        // If no commit method, still wait a bit for any pending changes
-        await new Promise(resolve => setTimeout(resolve, 500));
       }
+      
+      // Method 3: Try forceCommit or flush methods
+      if (!commitSuccess) {
+        const annotationProvidesAny = annotationProvides as any;
+        if (typeof annotationProvidesAny.forceCommit === 'function') {
+          try {
+            console.log('🔍 exportPDF: Trying forceCommit()...');
+            await annotationProvidesAny.forceCommit();
+            commitSuccess = true;
+            console.log('✅ exportPDF: Annotations committed via forceCommit');
+          } catch (error) {
+            console.warn('⚠️ exportPDF: forceCommit failed:', error);
+          }
+        } else if (typeof annotationProvidesAny.flush === 'function') {
+          try {
+            console.log('🔍 exportPDF: Trying flush()...');
+            await annotationProvidesAny.flush();
+            commitSuccess = true;
+            console.log('✅ exportPDF: Annotations flushed');
+          } catch (error) {
+            console.warn('⚠️ exportPDF: flush failed:', error);
+          }
+        }
+      }
+      
+      if (!commitSuccess) {
+        console.warn('⚠️ exportPDF: Could not commit annotations - no commit method available');
+        console.warn('⚠️ exportPDF: Annotations may not be saved in exported PDF!');
+      }
+      
+      // CRITICAL: Wait longer after commit to ensure the engine has fully processed the changes
+      // The engine needs time to write annotations to the PDF document structure
+      console.log('🔍 exportPDF: Waiting for engine to process committed annotations...');
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Increased wait time
+      
+      // Verify annotations are still present after commit
+      if (annotationState?.byUid) {
+        const annotationCountAfterCommit = Object.keys(annotationState.byUid).length;
+        console.log('🔍 exportPDF: Annotation count after commit:', annotationCountAfterCommit);
+        if (annotationCountAfterCommit === 0 && allAnnotations.length > 0) {
+          console.error('❌ exportPDF: WARNING - All annotations disappeared after commit!');
+        }
+      }
+      
+      // CRITICAL: Ensure annotations have appearance streams before export
+      // Ink annotations may need their appearance streams generated to be visible
+      // Try to update annotation appearances if the API supports it
+      if (annotationProvides && allAnnotations.length > 0) {
+        const annotationProvidesAny = annotationProvides as any;
+        try {
+          // Check if there's a method to update annotation appearances
+          if (typeof annotationProvidesAny.updateAppearances === 'function') {
+            console.log('🔍 exportPDF: Updating annotation appearances...');
+            await annotationProvidesAny.updateAppearances();
+            console.log('✅ exportPDF: Annotation appearances updated');
+          } else if (typeof annotationProvidesAny.generateAppearances === 'function') {
+            console.log('🔍 exportPDF: Generating annotation appearances...');
+            await annotationProvidesAny.generateAppearances();
+            console.log('✅ exportPDF: Annotation appearances generated');
+          } else {
+            console.log('🔍 exportPDF: No appearance update method found (annotations may need appearance streams)');
+          }
+        } catch (appearanceError) {
+          console.warn('⚠️ exportPDF: Could not update annotation appearances:', appearanceError);
+        }
+      }
+      
+      console.log('✅ exportPDF: Commit process complete, proceeding with export');
       
       const exportProvidesAny = exportProvides as any;
       console.log('🔍 exportPDF: Export provides keys:', Object.keys(exportProvidesAny));
@@ -168,20 +328,40 @@ export const EmbedPDFAnnotationControls = forwardRef<
         console.log('🔍 exportPDF: PDF bytes length:', pdfBytes?.byteLength || pdfBytes?.length || 'unknown');
         
         // Convert to Blob - handle both ArrayBuffer and Uint8Array
+        let pdfBlob: Blob;
         if (pdfBytes instanceof ArrayBuffer) {
           console.log('🔍 exportPDF: Creating Blob from ArrayBuffer');
-          return new Blob([pdfBytes], { type: 'application/pdf' });
+          pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
         } else if (pdfBytes instanceof Uint8Array) {
           console.log('🔍 exportPDF: Creating Blob from Uint8Array');
           // Create a new Uint8Array to ensure we have a proper copy
           const bytes = new Uint8Array(pdfBytes);
-          return new Blob([bytes], { type: 'application/pdf' });
+          pdfBlob = new Blob([bytes], { type: 'application/pdf' });
         } else {
           console.warn('🔍 exportPDF: Unexpected return type from saveAsCopy:', typeof pdfBytes);
           // Try to convert to ArrayBuffer if it's something else
           const arrayBuffer = await pdfBytes;
-          return new Blob([arrayBuffer], { type: 'application/pdf' });
+          pdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
         }
+        
+        // Verify the exported PDF contains annotations by checking the PDF structure
+        try {
+          console.log('🔍 exportPDF: Verifying exported PDF contains annotations...');
+          const pdfText = await pdfBlob.text();
+          // Check if PDF contains annotation markers (Annots, /Subtype /Ink, etc.)
+          const hasAnnots = pdfText.includes('/Annots') || pdfText.includes('/Subtype') || pdfText.includes('/Ink');
+          console.log('🔍 exportPDF: Exported PDF contains annotation markers:', hasAnnots);
+          if (!hasAnnots && allAnnotations.length > 0) {
+            console.error('❌ exportPDF: WARNING - Exported PDF does not appear to contain annotations!');
+            console.error('❌ exportPDF: This means annotations were not saved to the PDF.');
+          } else if (hasAnnots) {
+            console.log('✅ exportPDF: Exported PDF appears to contain annotations');
+          }
+        } catch (verifyError) {
+          console.warn('⚠️ exportPDF: Could not verify PDF annotations:', verifyError);
+        }
+        
+        return pdfBlob;
       } else {
         console.warn('🔍 exportPDF: exportProvides.saveAsCopy is not available. Available methods:', Object.keys(exportProvidesAny));
         

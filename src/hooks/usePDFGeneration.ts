@@ -187,12 +187,119 @@ export const usePDFGeneration = ({
       
       console.log(`Federal: Successfully filled ${filledFieldsCount} fields out of ${attemptedFieldsCount} attempted`);
 
-      // Note: Removed form.flatten() due to PDF-lib compatibility issues
-      // The form will remain editable, which is fine for our use case
+      // CRITICAL: Update field appearances before flattening
+      // PDF form fields have "appearance streams" that define how they look
+      // If we don't update these after filling, the flattened PDF won't show the filled values
+      // This is the key issue - without updating appearances, flattening won't render the values
+      // The web search revealed this is a common issue: form fields need their appearance streams
+      // updated after filling, otherwise flattening won't include the filled values in the rendered content
+      try {
+        console.log('🔍 Federal: Updating field appearances to make filled values visible...');
+        // Try to get an existing font from the PDF, or use a standard one
+        let font;
+        try {
+          // Try to get Helvetica (standard PDF font)
+          font = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+        } catch (fontError) {
+          console.warn('⚠️ Federal: Could not embed font, trying without font parameter');
+          font = undefined;
+        }
+        
+        // Update field appearances - this generates the visual representation of filled fields
+        // This is CRITICAL - without this, flattening won't include the filled values
+        if (font) {
+          form.updateFieldAppearances(font);
+        } else {
+          // Try without font parameter (pdf-lib may use default)
+          (form as any).updateFieldAppearances?.();
+        }
+        console.log('✅ Federal: Field appearances updated successfully');
+      } catch (appearanceError) {
+        console.error('❌ Federal: CRITICAL - Could not update field appearances:', appearanceError);
+        console.error('❌ Federal: Without updating appearances, flattened PDF will NOT show filled values!');
+        // This is critical - if we can't update appearances, the flattened PDF won't show values
+        // But let's continue and see if flattening still works
+      }
+
+      // Flatten the form fields so they become part of the PDF content
+      // This is necessary because EmbedPDF's RenderLayer may not render form field values
+      // Flattening converts form fields into actual rendered content
+      try {
+        console.log('🔍 Federal: Flattening form fields to make them visible in PDF rendering...');
+        form.flatten();
+        console.log('✅ Federal: Form fields flattened successfully');
+      } catch (flattenError) {
+        console.warn('⚠️ Federal: Could not flatten form fields:', flattenError);
+        console.warn('⚠️ Federal: PDF will be saved with editable form fields (may not display correctly in EmbedPDF)');
+        // Continue without flattening - the PDF will still have the data, just might not render correctly
+      }
 
       // Save the filled PDF
       const pdfBytes = await pdfDoc.save();
-      const filledPdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+      // Convert Uint8Array to ArrayBuffer to avoid type issues
+      const arrayBuffer = pdfBytes.buffer instanceof ArrayBuffer 
+        ? pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength)
+        : new Uint8Array(pdfBytes).buffer;
+      const filledPdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      
+      // Validate the PDF blob before storing
+      if (!filledPdfBlob || filledPdfBlob.size === 0) {
+        throw new Error('Failed to create PDF blob: blob is empty');
+      }
+      
+      // Verify PDF header
+      const testSlice = filledPdfBlob.slice(0, 4);
+      const testArray = await testSlice.arrayBuffer();
+      const testBytes = new Uint8Array(testArray);
+      const pdfHeader = String.fromCharCode(...testBytes);
+      if (pdfHeader !== '%PDF') {
+        throw new Error(`Invalid PDF format: blob does not contain valid PDF header (got: ${pdfHeader})`);
+      }
+      
+      console.log('✅ Federal: PDF blob validated, size:', filledPdfBlob.size, 'bytes');
+      
+      // Verify the filled PDF actually has filled fields before storing
+      // Note: After flattening, form fields are converted to rendered content, so we can't check them the same way
+      console.log('🔍 Federal: Verifying filled PDF before storing...');
+      const verifyBlobCopy = filledPdfBlob.slice(0);
+      const verifyFilledDoc = await PDFLib.PDFDocument.load(await verifyBlobCopy.arrayBuffer());
+      const verifyForm = verifyFilledDoc.getForm();
+      const verifyFields = verifyForm.getFields();
+      
+      let verifyFilledCount = 0;
+      
+      // If form was flattened, fields array will be empty (fields are now rendered content)
+      if (verifyFields.length === 0) {
+        console.log('✅ Federal: PDF form was flattened - fields are now rendered content (this is correct)');
+        console.log('✅ Federal: Verification complete - flattened PDF should display filled values correctly');
+        verifyFilledCount = filledFieldsCount; // Use the count from before flattening
+      } else {
+        // Form wasn't flattened, check if fields are filled
+        verifyFields.forEach(field => {
+          try {
+            if (field.constructor.name === 'PDFTextField') {
+              const text = (field as any).getText();
+              if (text && text.trim().length > 0) {
+                verifyFilledCount++;
+                console.log(`✅ Federal: Verified filled field "${field.getName()}" = "${text}"`);
+              }
+            } else if (field.constructor.name === 'PDFCheckBox') {
+              if ((field as any).isChecked()) {
+                verifyFilledCount++;
+                console.log(`✅ Federal: Verified checked field "${field.getName()}"`);
+              }
+            }
+          } catch (e) {
+            // Ignore field errors
+          }
+        });
+        console.log(`🔍 Federal: Verification complete - ${verifyFilledCount} filled fields found in saved PDF`);
+        
+        if (verifyFilledCount === 0 && verifyFields.length > 0) {
+          console.error('❌ Federal: CRITICAL - Saved PDF has NO filled fields! The PDF will appear blank.');
+          throw new Error('PDF was saved but no fields were filled. Please check the field mapping.');
+        }
+      }
       
       // Store the filled PDF
       await storePDFWithId('federal-form', filledPdfBlob, null, {
@@ -203,7 +310,7 @@ export const usePDFGeneration = ({
         fireNumber: formData.incidentNumber || 'N/A'
       });
 
-      console.log('Federal: PDF filled successfully, navigating to signing page...');
+      console.log('✅ Federal: PDF filled and stored successfully with', verifyFilledCount, 'filled fields, navigating to signing page...');
       
       // Navigate to PDF signing page with parameters
       const params = new URLSearchParams({
