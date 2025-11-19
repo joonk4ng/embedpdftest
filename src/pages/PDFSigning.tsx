@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { EmbedPDFViewer } from '../components/PDF/EmbedPDFViewer';
 import { getPDF, storePDFWithId } from '../utils/pdfStorage';
+import { logTrace, quickCheckPDF, traceSigningSystem, checkAllPDFs } from '../utils/signingSystemDebug';
 
 const formatToMMDDYY = (date: Date): string => {
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
@@ -31,6 +32,14 @@ const PDFSigning: React.FC = () => {
     const urlFireNumber = searchParams.get('fireNumber') || 'N/A';
     const urlDate = searchParams.get('date') || new Date().toLocaleDateString();
 
+    logTrace('PDFSIGNING_INIT', {
+      urlPdfId,
+      urlCrewNumber,
+      urlFireName,
+      urlFireNumber,
+      urlDate
+    });
+
     setPdfId(urlPdfId);
     setCrewInfo({
       crewNumber: urlCrewNumber,
@@ -41,12 +50,46 @@ const PDFSigning: React.FC = () => {
 
     const checkPDF = async () => {
       try {
+        logTrace('PDFSIGNING_CHECK_PDF_START', { pdfId: urlPdfId });
+        
+        // Run quick check for debugging
+        const quickCheck = await quickCheckPDF(urlPdfId);
+        if (!quickCheck.available) {
+          logTrace('PDFSIGNING_CHECK_PDF_FAILED', {
+            pdfId: urlPdfId,
+            error: quickCheck.error,
+            details: quickCheck.details
+          });
+        } else {
+          logTrace('PDFSIGNING_CHECK_PDF_SUCCESS', {
+            pdfId: urlPdfId,
+            details: quickCheck.details
+          });
+        }
+        
+        // Run full trace if debugging enabled
+        await traceSigningSystem(urlPdfId);
+        
+        // Check all PDFs in storage for debugging
+        await checkAllPDFs();
+        
         const storedPDF = await getPDF(urlPdfId);
         if (!storedPDF) {
+          logTrace('PDFSIGNING_PDF_NOT_FOUND', { pdfId: urlPdfId });
           setError('PDF not found. Please return to the main page and try again.');
+        } else {
+          logTrace('PDFSIGNING_PDF_FOUND', {
+            pdfId: urlPdfId,
+            pdfSize: storedPDF.pdf.size,
+            metadata: storedPDF.metadata
+          });
         }
         setIsLoading(false);
       } catch (err) {
+        logTrace('PDFSIGNING_CHECK_PDF_ERROR', {
+          pdfId: urlPdfId,
+          error: err instanceof Error ? err.message : String(err)
+        });
         setError('Error loading PDF. Please try again.');
         setIsLoading(false);
       }

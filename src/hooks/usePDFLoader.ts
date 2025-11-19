@@ -18,6 +18,7 @@ import { SelectionPluginPackage } from '@embedpdf/plugin-selection/react';
 import { AnnotationPluginPackage } from '@embedpdf/plugin-annotation/react';
 import { ZoomPluginPackage, ZoomMode } from '@embedpdf/plugin-zoom/react';
 import { ExportPluginPackage } from '@embedpdf/plugin-export/react';
+import { logTrace } from '../utils/signingSystemDebug';
 
 export interface UsePDFLoaderResult {
   pdfUrl: string | null;
@@ -57,6 +58,13 @@ export const usePDFLoader = (
 
         // Determine the effective PDF ID for the loader
         const effectivePdfId = pdfId || 'federal-form-temp';
+        
+        logTrace('USEPDFLOADER_START', {
+          pdfId,
+          effectivePdfId,
+          hasPdfBlob: !!pdfBlob,
+          date
+        });
 
         let pdfBlobToUse: Blob;
         let shouldFillForm = false;
@@ -64,14 +72,27 @@ export const usePDFLoader = (
         // If pdfBlob prop is provided, use it directly (assume it's already filled)
         if (pdfBlob) {
           console.log('🔍 usePDFLoader: Using provided PDF blob, size:', pdfBlob.size);
+          logTrace('USEPDFLOADER_USING_BLOB', {
+            pdfId,
+            blobSize: pdfBlob.size,
+            blobType: pdfBlob.type
+          });
           pdfBlobToUse = pdfBlob;
           shouldFillForm = false; // Skip form filling when blob is provided
         } else if (pdfId) {
           // Load from IndexedDB storage
+          logTrace('USEPDFLOADER_LOADING_FROM_STORAGE', { pdfId });
           const storedPDF = await getPDF(pdfId);
           if (!storedPDF) {
+            logTrace('USEPDFLOADER_STORAGE_NOT_FOUND', { pdfId });
             throw new Error('PDF not found in storage');
           }
+          logTrace('USEPDFLOADER_STORAGE_FOUND', {
+            pdfId,
+            pdfSize: storedPDF.pdf.size,
+            hasPreview: !!storedPDF.preview,
+            metadata: storedPDF.metadata
+          });
           pdfBlobToUse = storedPDF.pdf;
           
           // Verify the PDF is actually filled by checking with pdf-lib
@@ -123,8 +144,18 @@ export const usePDFLoader = (
 
         // Validate the PDF blob before proceeding
         if (!pdfBlobToUse || pdfBlobToUse.size === 0) {
+          logTrace('USEPDFLOADER_BLOB_INVALID', {
+            pdfId,
+            blobSize: pdfBlobToUse?.size || 0
+          });
           throw new Error('PDF blob is empty or invalid');
         }
+        
+        logTrace('USEPDFLOADER_BLOB_VALID', {
+          pdfId,
+          blobSize: pdfBlobToUse.size,
+          blobType: pdfBlobToUse.type
+        });
 
         // Read the ArrayBuffer once and reuse it to avoid consuming the blob
         // This is important because some blob types can only be read once
@@ -347,6 +378,12 @@ export const usePDFLoader = (
         currentPdfUrl = url;
         pdfUrlRef.current = url;
         
+        logTrace('USEPDFLOADER_BLOB_URL_CREATED', {
+          pdfId,
+          blobUrl: url.substring(0, 50) + '...',
+          blobSize: finalPdfBlob.size
+        });
+        
         console.log('🔍 usePDFLoader: Created new blob URL:', url, '(old URL revoked if existed)');
         
         console.log('🔍 usePDFLoader: Blob URL created:', url);
@@ -356,11 +393,24 @@ export const usePDFLoader = (
         try {
           const testResponse = await fetch(url);
           if (!testResponse.ok) {
+            logTrace('USEPDFLOADER_BLOB_URL_INACCESSIBLE', {
+              pdfId,
+              status: testResponse.status,
+              statusText: testResponse.statusText
+            });
             throw new Error(`Blob URL fetch failed: ${testResponse.status} ${testResponse.statusText}`);
           }
           const testBlob = await testResponse.blob();
+          logTrace('USEPDFLOADER_BLOB_URL_ACCESSIBLE', {
+            pdfId,
+            fetchedSize: testBlob.size
+          });
           console.log('✅ usePDFLoader: Blob URL is accessible, fetched size:', testBlob.size);
         } catch (fetchError) {
+          logTrace('USEPDFLOADER_BLOB_URL_ERROR', {
+            pdfId,
+            error: fetchError instanceof Error ? fetchError.message : String(fetchError)
+          });
           console.error('❌ usePDFLoader: Blob URL is not accessible:', fetchError);
           throw new Error(`Blob URL is not accessible: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
         }
@@ -425,6 +475,11 @@ export const usePDFLoader = (
         ];
         
         setPlugins(pdfPlugins);
+        logTrace('USEPDFLOADER_PLUGINS_CREATED', {
+          pdfId,
+          pluginsCount: pdfPlugins.length,
+          blobUrl: url.substring(0, 50) + '...'
+        });
         console.log('✅ usePDFLoader: Plugins created and set, count:', pdfPlugins.length);
         // Log the loader plugin configuration in detail
         const loaderPlugin = pdfPlugins[0];
@@ -448,8 +503,18 @@ export const usePDFLoader = (
           config3: config3
         });
         setIsLoading(false);
+        logTrace('USEPDFLOADER_COMPLETE', {
+          pdfId,
+          pdfUrl: url.substring(0, 50) + '...',
+          pluginsCount: pdfPlugins.length
+        });
         console.log('✅ usePDFLoader: Loading state set to false, PDF should render now');
       } catch (err) {
+        logTrace('USEPDFLOADER_ERROR', {
+          pdfId,
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined
+        });
         console.error('❌ usePDFLoader: Error loading PDF:', err);
         console.error('❌ usePDFLoader: Error stack:', err instanceof Error ? err.stack : 'No stack trace');
         if (mounted) {

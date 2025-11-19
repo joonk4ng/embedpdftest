@@ -8,6 +8,7 @@ export interface EmbedPDFAnnotationControlsRef {
   isInkMode: boolean;
   getAnnotations: () => any;
   exportPDF: () => Promise<Blob | null>;
+  getAnnotationProvides: () => any;
 }
 
 export interface EmbedPDFAnnotationControlsProps {
@@ -519,7 +520,11 @@ export const EmbedPDFAnnotationControls = forwardRef<
       // Return annotation state for saving
       return annotationState;
     },
-    exportPDF
+    exportPDF,
+    getAnnotationProvides: () => {
+      // Return annotation provides for direct access
+      return annotationProvides;
+    }
   }));
 
   // This component doesn't render anything visible - it just provides controls
