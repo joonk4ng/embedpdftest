@@ -112,9 +112,9 @@ export function extractSignatureBounds(annotationState: any): SignatureBounds | 
     const annotationObj = annotation?.object || annotation;
     
     // Check rect property first - it might tell us the coordinate space
-    const rect = annotationObj?.rect || annotation?.rect;
-    if (rect && Array.isArray(rect) && rect.length >= 4) {
-      const [x1, y1, x2, y2] = rect;
+    const annotationRect = annotationObj?.rect || annotation?.rect;
+    if (annotationRect && Array.isArray(annotationRect) && annotationRect.length >= 4) {
+      const [x1, y1, x2, y2] = annotationRect;
       console.log('🔍 extractSignatureBounds: Annotation rect property:', { 
         x1, y1, x2, y2, 
         width: Math.abs(x2 - x1), 
@@ -178,10 +178,9 @@ export function extractSignatureBounds(annotationState: any): SignatureBounds | 
 
     // Also check rect property if available (might be on annotationObj or annotation)
     // The rect property might be in PDF coordinate space already
-    const rect = annotationObj?.rect || annotation?.rect;
-    if (rect && Array.isArray(rect) && rect.length >= 4) {
-      const [x1, y1, x2, y2] = rect;
-      console.log('🔍 extractSignatureBounds: Found rect property:', { x1, y1, x2, y2, rect });
+    // Note: We already checked this above, but we check again here to include in bounds if in annotation space
+    if (annotationRect && Array.isArray(annotationRect) && annotationRect.length >= 4) {
+      const [x1, y1, x2, y2] = annotationRect;
       // Check if rect coordinates are in PDF space (typically larger values, like 0-792 for height)
       // vs annotation space (typically smaller pixel values)
       const rectWidth = Math.abs(x2 - x1);
@@ -189,10 +188,10 @@ export function extractSignatureBounds(annotationState: any): SignatureBounds | 
       const isLikelyPdfSpace = rectWidth > 500 || rectHeight > 500; // PDF points are typically 500-800 range
       
       if (isLikelyPdfSpace) {
-        console.log('🔍 extractSignatureBounds: Rect appears to be in PDF coordinate space, using it directly');
+        console.log('🔍 extractSignatureBounds: Rect appears to be in PDF coordinate space, storing for later use');
         // Rect is in PDF space, use it directly but we still need to extract from inkList for rendering
         // Store rect separately for coordinate conversion
-        (annotation as any)._pdfRect = rect;
+        (annotation as any)._pdfRect = annotationRect;
       } else {
         // Rect is in annotation space, include in bounds calculation
         minX = Math.min(minX, x1, x2);
