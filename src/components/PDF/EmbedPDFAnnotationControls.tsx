@@ -184,6 +184,25 @@ export const EmbedPDFAnnotationControls = forwardRef<
         }
       }
       
+      // CRITICAL: Capture annotations BEFORE commit (they may disappear from state after commit)
+      // Store annotations from state.byUid before committing
+      const annotationsBeforeCommit: any[] = [];
+      if (annotationState?.byUid) {
+        annotationsBeforeCommit.push(...Object.values(annotationState.byUid));
+        console.log(`🔍 exportPDF: Captured ${annotationsBeforeCommit.length} annotations from state.byUid before commit`);
+      }
+      
+      // Also combine with annotations found via getPageAnnotations
+      const allAnnotationsToProcess = [...allAnnotations];
+      // Add annotations from state that aren't already in allAnnotations
+      annotationsBeforeCommit.forEach(ann => {
+        const annId = ann.id || ann.uid;
+        if (!allAnnotationsToProcess.find(a => (a.id || a.uid) === annId)) {
+          allAnnotationsToProcess.push(ann);
+        }
+      });
+      console.log(`🔍 exportPDF: Total annotations to process: ${allAnnotationsToProcess.length} (${allAnnotations.length} from getPageAnnotations, ${annotationsBeforeCommit.length} from state.byUid)`);
+      
       // CRITICAL: Commit annotations to the PDF document before exporting
       // Even though autoCommit is enabled, we need to explicitly commit before export
       // to ensure all annotations are written to the PDF structure
@@ -192,7 +211,8 @@ export const EmbedPDFAnnotationControls = forwardRef<
         hasPendingChanges: annotationState?.hasPendingChanges,
         annotationsCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0,
         pagesWithAnnotations: pagesWithAnnotations,
-        allAnnotationsFound: allAnnotations.length
+        allAnnotationsFound: allAnnotations.length,
+        annotationsToProcess: allAnnotationsToProcess.length
       });
       
       // Try multiple commit methods to ensure annotations are saved
@@ -279,13 +299,120 @@ export const EmbedPDFAnnotationControls = forwardRef<
         }
       }
       
+      // DIAGNOSTIC: Check all available methods for appearance stream generation
+      console.log('🔍 DIAGNOSTIC: Checking all available methods...');
+      
+      // Check annotationProvides
+      if (annotationProvides) {
+        const providesAny = annotationProvides as any;
+        console.log('🔍 DIAGNOSTIC: annotationProvides methods:', Object.keys(providesAny));
+        console.log('🔍 DIAGNOSTIC: annotationProvides full object:', providesAny);
+        
+        // Check for any method containing "appearance", "stream", "flatten", "render"
+        const appearanceMethods = Object.keys(providesAny).filter(key => 
+          /appearance|stream|flatten|render|generate|update/i.test(key)
+        );
+        console.log('🔍 DIAGNOSTIC: annotationProvides methods related to appearance/stream/flatten:', appearanceMethods);
+      }
+      
+      // Check annotationApi
+      if (annotationApi) {
+        const apiAny = annotationApi as any;
+        console.log('🔍 DIAGNOSTIC: annotationApi methods:', Object.keys(apiAny));
+        const appearanceMethods = Object.keys(apiAny).filter(key => 
+          /appearance|stream|flatten|render|generate|update/i.test(key)
+        );
+        console.log('🔍 DIAGNOSTIC: annotationApi appearance-related methods:', appearanceMethods);
+      }
+      
+      // Check exportProvides
+      if (exportProvides) {
+        const exportAny = exportProvides as any;
+        console.log('🔍 DIAGNOSTIC: exportProvides methods:', Object.keys(exportAny));
+        const appearanceMethods = Object.keys(exportAny).filter(key => 
+          /appearance|stream|flatten|render|generate|update/i.test(key)
+        );
+        console.log('🔍 DIAGNOSTIC: exportProvides appearance-related methods:', appearanceMethods);
+      }
+      
+      // Check engine
+      if (engineRef?.current) {
+        const engine = engineRef.current;
+        console.log('🔍 DIAGNOSTIC: engine methods:', Object.keys(engine));
+        const appearanceMethods = Object.keys(engine).filter(key => 
+          /appearance|stream|flatten|render|generate|update/i.test(key)
+        );
+        console.log('🔍 DIAGNOSTIC: engine appearance-related methods:', appearanceMethods);
+        
+        // Also check if engine has nested objects with methods
+        Object.keys(engine).forEach(key => {
+          const value = (engine as any)[key];
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            const nestedMethods = Object.keys(value).filter(nestedKey => 
+              typeof value[nestedKey] === 'function'
+            );
+            if (nestedMethods.length > 0) {
+              console.log(`🔍 DIAGNOSTIC: engine.${key} methods:`, nestedMethods);
+              const appearanceNested = nestedMethods.filter(nestedKey => 
+                /appearance|stream|flatten|render|generate|update/i.test(nestedKey)
+              );
+              if (appearanceNested.length > 0) {
+                console.log(`🔍 DIAGNOSTIC: engine.${key} appearance-related methods:`, appearanceNested);
+              }
+            }
+          }
+        });
+      }
+      
       // CRITICAL: Ensure annotations have appearance streams before export
-      // Ink annotations may need their appearance streams generated to be visible
-      // Try to update annotation appearances if the API supports it
-      if (annotationProvides && allAnnotations.length > 0) {
+      // Found updateAnnotation and renderAnnotation methods - try using them
+      // Use the annotations we captured BEFORE commit (they may have disappeared from state after commit)
+      if (annotationProvides && allAnnotationsToProcess.length > 0) {
         const annotationProvidesAny = annotationProvides as any;
         try {
-          // Check if there's a method to update annotation appearances
+          console.log(`🔍 exportPDF: Attempting to update/render ${allAnnotationsToProcess.length} annotations for appearance streams...`);
+          
+          // Try updateAnnotation for each annotation
+          if (typeof annotationProvidesAny.updateAnnotation === 'function') {
+            console.log(`🔍 exportPDF: Updating ${allAnnotationsToProcess.length} annotations using updateAnnotation...`);
+            for (const annotation of allAnnotationsToProcess) {
+              try {
+                const annId = annotation.id || annotation.uid || 'unknown';
+                console.log(`🔍 exportPDF: Updating annotation ${annId}...`);
+                const updateResult = annotationProvidesAny.updateAnnotation(annotation);
+                if (updateResult && typeof updateResult.toPromise === 'function') {
+                  await updateResult.toPromise();
+                } else if (updateResult && typeof updateResult.then === 'function') {
+                  await updateResult;
+                }
+                console.log(`✅ exportPDF: Updated annotation ${annId}`);
+              } catch (updateError) {
+                console.warn(`⚠️ exportPDF: Error updating annotation ${annotation.id || annotation.uid}:`, updateError);
+              }
+            }
+          }
+          
+          // Try renderAnnotation for each annotation
+          if (typeof annotationProvidesAny.renderAnnotation === 'function') {
+            console.log(`🔍 exportPDF: Rendering ${allAnnotationsToProcess.length} annotations using renderAnnotation...`);
+            for (const annotation of allAnnotationsToProcess) {
+              try {
+                const annId = annotation.id || annotation.uid || 'unknown';
+                console.log(`🔍 exportPDF: Rendering annotation ${annId}...`);
+                const renderResult = annotationProvidesAny.renderAnnotation(annotation);
+                if (renderResult && typeof renderResult.toPromise === 'function') {
+                  await renderResult.toPromise();
+                } else if (renderResult && typeof renderResult.then === 'function') {
+                  await renderResult;
+                }
+                console.log(`✅ exportPDF: Rendered annotation ${annId}`);
+              } catch (renderError) {
+                console.warn(`⚠️ exportPDF: Error rendering annotation ${annotation.id || annotation.uid}:`, renderError);
+              }
+            }
+          }
+          
+          // Also try the old methods as fallback
           if (typeof annotationProvidesAny.updateAppearances === 'function') {
             console.log('🔍 exportPDF: Updating annotation appearances...');
             await annotationProvidesAny.updateAppearances();
@@ -295,11 +422,13 @@ export const EmbedPDFAnnotationControls = forwardRef<
             await annotationProvidesAny.generateAppearances();
             console.log('✅ exportPDF: Annotation appearances generated');
           } else {
-            console.log('🔍 exportPDF: No appearance update method found (annotations may need appearance streams)');
+            console.log('🔍 exportPDF: No global appearance update method found');
           }
         } catch (appearanceError) {
           console.warn('⚠️ exportPDF: Could not update annotation appearances:', appearanceError);
         }
+      } else {
+        console.warn(`⚠️ exportPDF: No annotations found to update/render (allAnnotationsToProcess.length: ${allAnnotationsToProcess.length})`);
       }
       
       console.log('✅ exportPDF: Commit process complete, proceeding with export');

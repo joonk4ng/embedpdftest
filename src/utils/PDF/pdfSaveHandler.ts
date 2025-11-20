@@ -24,6 +24,11 @@ export interface SaveOptions {
 
 /**
  * Handles saving a PDF with signature (flattened)
+ * 
+ * @deprecated This function uses the legacy canvas-based approach.
+ * Use the unified signature handler (savePDFWithEmbedPDFSignature) instead,
+ * which works directly with EmbedPDF annotation state.
+ * This function is kept for backward compatibility only.
  */
 export async function savePDFWithSignature(
   pdfDoc: pdfjsLib.PDFDocumentProxy,

@@ -4,7 +4,7 @@ import { DrawingCanvas, type DrawingCanvasRef } from './DrawingCanvas';
 import { EmbedPDFZoomControls } from './EmbedPDFZoomControls';
 import { EmbedPDFAnnotationControls, type EmbedPDFAnnotationControlsRef } from './EmbedPDFAnnotationControls';
 import { downloadOriginalPDF } from '../../utils/PDF/pdfSaveHandler';
-import { createFlattenedPDF, flattenPDFToImage } from '../../utils/PDF/pdfFlattening';
+import { savePDFWithEmbedPDFSignature } from '../../utils/PDF/unifiedSignatureHandler';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as PDFLib from 'pdf-lib';
 import { usePDFLoader } from '../../hooks/usePDFLoader';
@@ -63,11 +63,37 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
   const viewportWrapperRef = useRef<HTMLDivElement | null>(null);
   const embedPdfEngineRef = useRef<any>(null);
   
+  // Store page dimensions from renderPage callback (used by annotation layer)
+  const pageDimensionsRef = useRef<{ width: number; height: number; pageIndex: number }[]>([]);
+  
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [componentError, setComponentError] = useState<string | null>(null);
 
   // Initialize EmbedPDF engine
+  // DIAGNOSTIC: Check if usePdfiumEngine accepts options
+  // Note: We're calling it without options first to see what's available
   const { engine, isLoading: engineLoading } = usePdfiumEngine();
+  
+  // DIAGNOSTIC: Log engine structure when available
+  useEffect(() => {
+    if (engine) {
+      console.log('🔍 DIAGNOSTIC: Engine object keys:', Object.keys(engine));
+      console.log('🔍 DIAGNOSTIC: Engine type:', typeof engine);
+      console.log('🔍 DIAGNOSTIC: Engine constructor:', engine.constructor?.name);
+      
+      // Check for configuration or options
+      const engineAny = engine as any;
+      if (engineAny.config) {
+        console.log('🔍 DIAGNOSTIC: Engine has config:', engineAny.config);
+      }
+      if (engineAny.options) {
+        console.log('🔍 DIAGNOSTIC: Engine has options:', engineAny.options);
+      }
+      if (engineAny.settings) {
+        console.log('🔍 DIAGNOSTIC: Engine has settings:', engineAny.settings);
+      }
+    }
+  }, [engine]);
   
   // Store engine reference for saving
   useEffect(() => {
@@ -129,501 +155,343 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
     drawingCanvasRef.current?.clearDrawing();
   }, []);
 
-  // Handle saving the PDF with signature (uses EmbedPDF's default save logic)
+  // Handle saving the PDF with signature using unified signature handler
   const handleSave = useCallback(async () => {
     if (!onSave) return;
 
     try {
-      // Use EmbedPDF's exportPDF method to get the PDF with annotations
-      // This uses EmbedPDF's native saveAsCopy which preserves annotations correctly
-      if (!annotationControlsRef.current?.exportPDF) {
+      console.log('🔍 EmbedPDFViewer: Starting unified signature save process...');
+
+      // Get annotation state
+      if (!annotationControlsRef.current) {
         setComponentError('Failed to save PDF. Annotation controls not available.');
         console.error('🔍 EmbedPDFViewer: Annotation controls not available');
         return;
       }
 
-      console.log('🔍 EmbedPDFViewer: Exporting PDF with annotations using EmbedPDF saveAsCopy...');
-      let annotatedPdfBlob: Blob | null;
-      try {
-        annotatedPdfBlob = await annotationControlsRef.current.exportPDF();
-        console.log('🔍 EmbedPDFViewer: exportPDF completed, result:', annotatedPdfBlob ? 'Blob received' : 'null');
-      } catch (exportError) {
-        console.error('❌ EmbedPDFViewer: Error in exportPDF:', exportError);
-        setComponentError('Failed to export PDF with annotations.');
-        return;
+      // Get annotation provides to access commit and getPageAnnotations
+      const annotationProvides = annotationControlsRef.current.getAnnotationProvides();
+      if (!annotationProvides) {
+        console.warn('🔍 EmbedPDFViewer: No annotation provides available');
+      }
+
+      // Get initial annotation state
+      let annotationState = annotationControlsRef.current.getAnnotations();
+      console.log('🔍 EmbedPDFViewer: Initial annotation state:', {
+        hasPendingChanges: annotationState?.hasPendingChanges,
+        byUidCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0,
+        pages: annotationState?.pages
+      });
+
+      // CRITICAL: Capture annotations from state BEFORE commit (they may disappear after commit)
+      const annotationsBeforeCommit: any[] = [];
+      if (annotationState?.byUid) {
+        annotationsBeforeCommit.push(...Object.values(annotationState.byUid));
+        console.log(`🔍 EmbedPDFViewer: Captured ${annotationsBeforeCommit.length} annotations from state.byUid before commit`);
+      }
+
+      // CRITICAL: Commit annotations first to ensure they're saved to the PDF document
+      // This is the same approach used in the exportPDF function
+      let commitSuccess = false;
+      if (annotationProvides) {
+        const annotationProvidesAny = annotationProvides as any;
+        
+        // Method 1: Try annotationProvides.commit() (most reliable)
+        if (typeof annotationProvidesAny.commit === 'function') {
+          try {
+            console.log('🔍 EmbedPDFViewer: Committing annotations using annotationProvides.commit()...');
+            const commitResult = annotationProvidesAny.commit();
+            if (commitResult && typeof commitResult.then === 'function') {
+              await commitResult;
+            } else if (commitResult && typeof commitResult.toPromise === 'function') {
+              await commitResult.toPromise();
+            }
+            commitSuccess = true;
+            console.log('✅ EmbedPDFViewer: Annotations committed successfully via annotationProvides');
+          } catch (commitError) {
+            console.error('❌ EmbedPDFViewer: Error committing via annotationProvides:', commitError);
+          }
+        }
+        
+        // Method 2: Try forceCommit or flush methods
+        if (!commitSuccess) {
+          if (typeof annotationProvidesAny.forceCommit === 'function') {
+            try {
+              console.log('🔍 EmbedPDFViewer: Trying forceCommit()...');
+              await annotationProvidesAny.forceCommit();
+              commitSuccess = true;
+              console.log('✅ EmbedPDFViewer: Annotations committed via forceCommit');
+            } catch (error) {
+              console.warn('⚠️ EmbedPDFViewer: forceCommit failed:', error);
+            }
+          } else if (typeof annotationProvidesAny.flush === 'function') {
+            try {
+              console.log('🔍 EmbedPDFViewer: Trying flush()...');
+              await annotationProvidesAny.flush();
+              commitSuccess = true;
+              console.log('✅ EmbedPDFViewer: Annotations flushed');
+            } catch (error) {
+              console.warn('⚠️ EmbedPDFViewer: flush failed:', error);
+            }
+          }
+        }
+        
+        if (!commitSuccess) {
+          console.warn('⚠️ EmbedPDFViewer: Could not commit annotations - no commit method available');
+        }
+        
+        // CRITICAL: Wait longer after commit to ensure the engine has fully processed the changes
+        // The engine needs time to write annotations to the PDF document structure
+        console.log('🔍 EmbedPDFViewer: Waiting for engine to process committed annotations...');
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second like exportPDF does
+      }
+
+      // Wait for annotations to be fully created and committed
+      console.log('🔍 EmbedPDFViewer: Waiting for annotations to be fully created...');
+      let waitAttempts = 0;
+      const maxWaitAttempts = 30; // Wait up to 3 seconds (30 * 100ms)
+      
+      while (waitAttempts < maxWaitAttempts) {
+        annotationState = annotationControlsRef.current.getAnnotations();
+        const currentHasPendingChanges = annotationState?.hasPendingChanges;
+        const currentAnnotationCount = annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0;
+        
+        if (!currentHasPendingChanges && currentAnnotationCount > 0) {
+          console.log(`✅ EmbedPDFViewer: Annotations ready after ${waitAttempts * 100}ms (${currentAnnotationCount} annotations)`);
+          break;
+        }
+        
+        if (waitAttempts === 0) {
+          console.log('🔍 EmbedPDFViewer: Waiting for annotations...', {
+            hasPendingChanges: currentHasPendingChanges,
+            annotationCount: currentAnnotationCount
+          });
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitAttempts++;
       }
       
-      if (!annotatedPdfBlob) {
-        setComponentError('Failed to save PDF. Could not export PDF with annotations.');
-        console.error('🔍 EmbedPDFViewer: exportPDF returned null');
+      // Final state check
+      annotationState = annotationControlsRef.current.getAnnotations();
+      console.log('🔍 EmbedPDFViewer: Final annotation state:', {
+        hasPendingChanges: annotationState?.hasPendingChanges,
+        byUidCount: annotationState?.byUid ? Object.keys(annotationState.byUid).length : 0
+      });
+
+      // Try to get annotations using getPageAnnotations (this gets them from the PDF document)
+      let allAnnotations: any[] = [];
+      if (annotationProvides && typeof (annotationProvides as any).getPageAnnotations === 'function') {
+        try {
+          console.log('🔍 EmbedPDFViewer: Getting annotations via getPageAnnotations...');
+          const pageIndices = annotationState?.pages ? Object.keys(annotationState.pages).map(Number) : [0];
+          console.log('🔍 EmbedPDFViewer: Checking annotations on pages:', pageIndices);
+          
+          for (const pageIndex of pageIndices) {
+            try {
+              const pageAnnotationsResult = (annotationProvides as any).getPageAnnotations({ pageIndex });
+              let pageAnnotations: any;
+              if (pageAnnotationsResult && typeof pageAnnotationsResult.toPromise === 'function') {
+                pageAnnotations = await pageAnnotationsResult.toPromise();
+              } else if (pageAnnotationsResult && typeof pageAnnotationsResult.then === 'function') {
+                pageAnnotations = await pageAnnotationsResult;
+              } else {
+                pageAnnotations = pageAnnotationsResult;
+              }
+              
+              if (Array.isArray(pageAnnotations)) {
+                allAnnotations.push(...pageAnnotations);
+                console.log(`🔍 EmbedPDFViewer: Found ${pageAnnotations.length} annotations on page ${pageIndex} via getPageAnnotations`);
+                // Log first annotation structure for debugging
+                if (pageAnnotations.length > 0) {
+                  console.log('🔍 EmbedPDFViewer: First annotation structure:', {
+                    keys: Object.keys(pageAnnotations[0] || {}),
+                    hasObject: !!(pageAnnotations[0]?.object),
+                    hasInkList: !!(pageAnnotations[0]?.object?.inkList || pageAnnotations[0]?.inkList)
+                  });
+                }
+              }
+            } catch (error) {
+              console.error(`🔍 EmbedPDFViewer: Error getting annotations for page ${pageIndex}:`, error);
+            }
+          }
+        } catch (error) {
+          console.error('🔍 EmbedPDFViewer: Error calling getPageAnnotations:', error);
+        }
+      }
+
+      // Combine annotations from getPageAnnotations with annotations captured before commit
+      // Sometimes annotations disappear from state after commit, so we need both sources
+      const allAnnotationsToProcess = [...allAnnotations];
+      annotationsBeforeCommit.forEach(ann => {
+        const annId = ann.id || ann.uid || (ann.object?.id || ann.object?.uid);
+        if (annId && !allAnnotationsToProcess.find(a => (a.id || a.uid) === annId)) {
+          allAnnotationsToProcess.push(ann);
+        }
+      });
+      
+      console.log(`🔍 EmbedPDFViewer: Total annotations to process: ${allAnnotationsToProcess.length} (${allAnnotations.length} from getPageAnnotations, ${annotationsBeforeCommit.length} from state.byUid)`);
+
+      // Use combined annotations
+      if (allAnnotationsToProcess.length > 0) {
+        console.log('🔍 EmbedPDFViewer: Using combined annotations:', allAnnotationsToProcess.length);
+        // Create a synthetic annotation state from the retrieved annotations
+        annotationState = {
+          ...annotationState,
+          byUid: allAnnotationsToProcess.reduce((acc, ann, idx) => {
+            // Handle both direct annotations and nested object structure
+            const annotationObj = ann.object || ann;
+            const uid = ann.id || ann.uid || annotationObj.id || annotationObj.uid || `annotation-${idx}`;
+            acc[uid] = ann; // Keep the full annotation structure
+            return acc;
+          }, {} as any)
+        };
+      } else {
+        console.log('🔍 EmbedPDFViewer: Using annotations from state');
+        if (annotationState?.byUid) {
+          console.log('🔍 EmbedPDFViewer: Annotations by UID:', Object.keys(annotationState.byUid).length, 'annotations');
+        }
+      }
+
+      if (!annotationState || !annotationState.byUid || Object.keys(annotationState.byUid).length === 0) {
+        console.warn('🔍 EmbedPDFViewer: No annotations found, saving PDF without signature');
+      }
+
+      // Get original PDF bytes
+      if (!pdfDocRef.current) {
+        setComponentError('Failed to save PDF. PDF document not loaded.');
+        console.error('🔍 EmbedPDFViewer: PDF document not available');
         return;
       }
 
-      console.log('🔍 EmbedPDFViewer: Successfully exported PDF with annotations from EmbedPDF');
-      console.log('🔍 EmbedPDFViewer: Annotated PDF blob size:', annotatedPdfBlob.size, 'type:', annotatedPdfBlob.type);
-      console.log('🔍 EmbedPDFViewer: About to start flattening process...');
+      const originalPdfBytes = await pdfDocRef.current.getData();
+      console.log('🔍 EmbedPDFViewer: Got original PDF bytes, size:', originalPdfBytes.byteLength);
+
+      // Get PDF page dimensions in points (native PDF coordinate system)
+      const firstPage = await pdfDocRef.current.getPage(1);
+      const pdfViewport = firstPage.getViewport({ scale: 1.0 });
+      const pdfPageWidth = pdfViewport.width;
+      const pdfPageHeight = pdfViewport.height;
+      console.log('🔍 EmbedPDFViewer: PDF page dimensions (points):', { width: pdfPageWidth, height: pdfPageHeight });
+
+      // Get the annotation layer page dimensions (from PagePointerProvider)
+      // These are the dimensions that annotations use for their coordinate space
+      let renderedPageWidth = pdfPageWidth;
+      let renderedPageHeight = pdfPageHeight;
       
-      // CRITICAL: The annotation has `hasAppearance: false` - it doesn't have an appearance stream
-      // This means the annotation won't render when the PDF is opened in most viewers
-      // SOLUTION: Capture the rendered canvas from EmbedPDF viewer (which DOES show annotations)
-      // and use that to create a flattened PDF
-      console.log('🔍 EmbedPDFViewer: Annotation lacks appearance stream - capturing rendered canvas to flatten annotations...');
-      let finalPdfBlob: Blob;
-      
-      try {
-        // Wait for annotations to be fully committed and rendered on the canvas
-        console.log('🔍 EmbedPDFViewer: Waiting for annotations to be committed and rendered...');
-        
-        // First, ensure annotations are committed to pages
-        if (annotationControlsRef.current) {
-          const annotationProvides = annotationControlsRef.current.getAnnotationProvides();
-          if (annotationProvides && typeof annotationProvides.commit === 'function') {
-            console.log('🔍 EmbedPDFViewer: Committing annotations before capture...');
-            try {
-              const commitResult = annotationProvides.commit();
-              if (commitResult && typeof commitResult.toPromise === 'function') {
-                await commitResult.toPromise();
-              } else if (commitResult && typeof commitResult.then === 'function') {
-                await commitResult;
-              }
-              console.log('✅ EmbedPDFViewer: Annotations committed');
-              // Wait a bit more after commit for rendering
-              await new Promise(resolve => setTimeout(resolve, 500));
-            } catch (commitError) {
-              console.warn('⚠️ EmbedPDFViewer: Error committing annotations:', commitError);
+      // First, try to get dimensions from stored page dimensions (from renderPage callback)
+      const pageDim = pageDimensionsRef.current.find(p => p.pageIndex === 0);
+      if (pageDim) {
+        renderedPageWidth = pageDim.width;
+        renderedPageHeight = pageDim.height;
+        console.log('🔍 EmbedPDFViewer: Using page dimensions from renderPage callback:', {
+          width: renderedPageWidth,
+          height: renderedPageHeight,
+          pageIndex: pageDim.pageIndex,
+          ratio: {
+            width: (renderedPageWidth / pdfPageWidth).toFixed(4),
+            height: (renderedPageHeight / pdfPageHeight).toFixed(4)
+          }
+        });
+      } else {
+        // Fallback: get from DOM
+        console.warn('⚠️ EmbedPDFViewer: Page dimensions not found in ref, trying DOM...');
+        if (viewportWrapperRef.current) {
+          // Try to find the actual rendered canvas or page element
+          const canvases = viewportWrapperRef.current.querySelectorAll('canvas');
+          let renderCanvas: HTMLCanvasElement | null = null;
+          let maxArea = 0;
+          
+          // Find the largest canvas (likely the render layer)
+          for (const canvas of Array.from(canvases)) {
+            const htmlCanvas = canvas as HTMLCanvasElement;
+            const area = htmlCanvas.width * htmlCanvas.height;
+            if (area > maxArea && htmlCanvas.width > 0 && htmlCanvas.height > 0) {
+              maxArea = area;
+              renderCanvas = htmlCanvas;
             }
           }
-        }
-        
-        // Wait for canvas to actually render (check multiple times)
-        console.log('🔍 EmbedPDFViewer: Waiting for canvas to render...');
-        let renderAttempts = 0;
-        let validCanvasesFound = false;
-        while (renderAttempts < 10 && !validCanvasesFound) {
-          await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms between checks
           
-          const allCanvases = viewportWrapperRef.current?.querySelectorAll('canvas') || [];
-          const validCanvases = Array.from(allCanvases).filter(canvas => {
-            const htmlCanvas = canvas as HTMLCanvasElement;
-            return htmlCanvas.width > 0 && htmlCanvas.height > 0;
-          });
-          
-          if (validCanvases.length > 0) {
-            validCanvasesFound = true;
-            console.log(`✅ EmbedPDFViewer: Found ${validCanvases.length} valid canvas(es) after ${(renderAttempts + 1) * 200}ms`);
-          } else {
-            renderAttempts++;
-            if (renderAttempts < 10) {
-              console.log(`🔍 EmbedPDFViewer: Canvas not ready yet, attempt ${renderAttempts + 1}/10...`);
-            }
-          }
-        }
-        
-        if (!validCanvasesFound) {
-          console.warn('⚠️ EmbedPDFViewer: Canvas did not render after waiting, using exported PDF directly');
-          finalPdfBlob = annotatedPdfBlob;
-        } else {
-          // Capture the rendered canvas from the viewer - this includes the annotations as they're displayed
-          console.log('🔍 EmbedPDFViewer: Capturing rendered canvas from viewer...');
-          console.log('🔍 EmbedPDFViewer: Viewport wrapper ref:', viewportWrapperRef.current);
-          
-          // Look for canvas elements - try to find the main render canvas
-          // EmbedPDF typically has multiple canvas layers (background, render, annotation)
-          const allCanvases = viewportWrapperRef.current?.querySelectorAll('canvas') || [];
-          console.log(`🔍 EmbedPDFViewer: Found ${allCanvases.length} total canvas elements`);
-          
-          // Log all canvas details
-          allCanvases.forEach((canvas, idx) => {
-            const htmlCanvas = canvas as HTMLCanvasElement;
-            console.log(`🔍 EmbedPDFViewer: Canvas ${idx}:`, {
-              width: htmlCanvas.width,
-              height: htmlCanvas.height,
-              style: htmlCanvas.style.cssText,
-              className: htmlCanvas.className,
-              id: htmlCanvas.id,
-              offsetWidth: htmlCanvas.offsetWidth,
-              offsetHeight: htmlCanvas.offsetHeight
+          if (renderCanvas) {
+            // Use the canvas's internal dimensions (not display dimensions)
+            renderedPageWidth = renderCanvas.width;
+            renderedPageHeight = renderCanvas.height;
+            console.log('🔍 EmbedPDFViewer: Using render canvas dimensions (fallback):', { 
+              width: renderedPageWidth, 
+              height: renderedPageHeight
             });
-          });
-          
-          // Try to find the main render canvas (usually the largest one with actual content)
-          // Or combine all visible canvases
-          const canvasElements = Array.from(allCanvases).filter(canvas => {
-            const htmlCanvas = canvas as HTMLCanvasElement;
-            return htmlCanvas.width > 0 && htmlCanvas.height > 0 && 
-                   htmlCanvas.offsetWidth > 0 && htmlCanvas.offsetHeight > 0;
-          }) as HTMLCanvasElement[];
-        
-        if (!canvasElements || canvasElements.length === 0) {
-          console.warn('⚠️ EmbedPDFViewer: No canvas elements found in viewer, using exported PDF directly');
-          // Use the exported PDF directly - it should have annotations even if they lack appearance streams
-          finalPdfBlob = annotatedPdfBlob;
-          console.log('⚠️ EmbedPDFViewer: Using exported PDF directly (annotations may not render in all viewers), size:', finalPdfBlob.size);
-        } else {
-          console.log(`🔍 EmbedPDFViewer: Found ${canvasElements.length} canvas elements, checking for content...`);
-          
-          // Filter to only canvases that have content (non-zero dimensions)
-          const validCanvases: HTMLCanvasElement[] = [];
-          for (let i = 0; i < canvasElements.length; i++) {
-            const canvas = canvasElements[i] as HTMLCanvasElement;
-            if (canvas.width > 0 && canvas.height > 0) {
-              validCanvases.push(canvas);
-              console.log(`✅ EmbedPDFViewer: Canvas ${i + 1} is valid, size: ${canvas.width}x${canvas.height}`);
-            } else {
-              console.warn(`⚠️ EmbedPDFViewer: Canvas ${i + 1} has zero dimensions, skipping`);
-            }
-          }
-          
-          if (validCanvases.length === 0) {
-            console.warn('⚠️ EmbedPDFViewer: No valid canvas elements found, using exported PDF directly');
-            finalPdfBlob = annotatedPdfBlob;
-          } else {
-            // Find SVG elements (annotations are often rendered as SVG)
-            const svgElements = viewportWrapperRef.current?.querySelectorAll('svg') || [];
-            console.log(`🔍 EmbedPDFViewer: Found ${svgElements.length} SVG elements (annotations may be here)`);
-            
-            // Group canvases and SVGs by page (they should be in the same container)
-            // For now, let's composite all layers for each page
-            console.log(`🔍 EmbedPDFViewer: Creating composite images from ${validCanvases.length} canvases and ${svgElements.length} SVGs...`);
-            const pdfDoc = await PDFLib.PDFDocument.create();
-            
-            // Try to find page containers first, but also look at viewport level for SVGs
-            const pageContainers = viewportWrapperRef.current?.querySelectorAll('[data-embedpdf], [class*="page"], [class*="Page"]') || [];
-            console.log(`🔍 EmbedPDFViewer: Found ${pageContainers.length} potential page containers`);
-            
-            // Also get all SVGs at viewport level (annotations might be here)
-            const allSvgs = viewportWrapperRef.current?.querySelectorAll('svg') || [];
-            console.log(`🔍 EmbedPDFViewer: Found ${allSvgs.length} SVG elements at viewport level`);
-            
-            // Log SVG details
-            allSvgs.forEach((svg, idx) => {
-              const htmlSvg = svg as SVGSVGElement;
-              const rect = htmlSvg.getBoundingClientRect();
-              console.log(`🔍 EmbedPDFViewer: SVG ${idx}:`, {
-                viewBox: htmlSvg.viewBox?.baseVal,
-                width: (htmlSvg as any).width?.baseVal?.value || rect.width,
-                height: (htmlSvg as any).height?.baseVal?.value || rect.height,
-                boundingRect: { width: rect.width, height: rect.height },
-                innerHTML: htmlSvg.innerHTML.substring(0, 100) + '...'
-              });
-            });
-            
-            // If we have page containers, process each one
-            if (pageContainers.length > 0) {
-              for (let pageIdx = 0; pageIdx < pageContainers.length; pageIdx++) {
-                const container = pageContainers[pageIdx] as HTMLElement;
-                const containerCanvases = container.querySelectorAll('canvas');
-                const containerSvgs = container.querySelectorAll('svg');
-                
-                console.log(`🔍 EmbedPDFViewer: Page ${pageIdx + 1} has ${containerCanvases.length} canvases and ${containerSvgs.length} SVGs`);
-                
-                // Find the main render canvas (usually the largest)
-                let mainCanvas: HTMLCanvasElement | null = null;
-                let maxArea = 0;
-                for (let canvasIdx = 0; canvasIdx < containerCanvases.length; canvasIdx++) {
-                  const canvas = containerCanvases[canvasIdx] as HTMLCanvasElement;
-                  const area = canvas.width * canvas.height;
-                  if (area > maxArea && canvas.width > 0 && canvas.height > 0) {
-                    maxArea = area;
-                    mainCanvas = canvas;
-                  }
-                }
-                
-                if (!mainCanvas) {
-                  console.warn(`⚠️ EmbedPDFViewer: No main canvas found for page ${pageIdx + 1}, skipping`);
-                  continue;
-                }
-                
-                const canvasWidth = mainCanvas.width;
-                const canvasHeight = mainCanvas.height;
-                console.log(`🔍 EmbedPDFViewer: Using main canvas for page ${pageIdx + 1}, size: ${canvasWidth}x${canvasHeight}`);
-                
-                // Create a composite canvas
-                const compositeCanvas = document.createElement('canvas');
-                compositeCanvas.width = canvasWidth;
-                compositeCanvas.height = canvasHeight;
-                const compositeCtx = compositeCanvas.getContext('2d');
-                
-                if (!compositeCtx) {
-                  console.error(`❌ EmbedPDFViewer: Failed to get composite canvas context for page ${pageIdx + 1}`);
-                  continue;
-                }
-                
-                // Fill with white background
-                compositeCtx.fillStyle = 'white';
-                compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
-                
-                // Draw the PDF canvas first
-                compositeCtx.drawImage(mainCanvas, 0, 0);
-                
-                // Draw annotation SVGs on top (from container first, then viewport level)
-                const svgsToDraw = containerSvgs.length > 0 ? containerSvgs : allSvgs;
-                console.log(`🔍 EmbedPDFViewer: Drawing ${svgsToDraw.length} SVG(s) on page ${pageIdx + 1}`);
-                
-                for (let svgIdx = 0; svgIdx < svgsToDraw.length; svgIdx++) {
-                  const svg = svgsToDraw[svgIdx] as SVGSVGElement;
-                  try {
-                    // Get SVG dimensions
-                    const svgRect = svg.getBoundingClientRect();
-                    const containerRect = container.getBoundingClientRect();
-                    const viewportRect = viewportWrapperRef.current?.getBoundingClientRect();
-                    
-                    // Use viewport or container for positioning
-                    const baseRect = viewportRect || containerRect;
-                    
-                    // Get SVG viewBox or use bounding rect
-                    const svgViewBox = svg.viewBox?.baseVal;
-                    const svgWidth = (svg as any).width?.baseVal?.value || svgRect.width || (svgViewBox ? svgViewBox.width : 0);
-                    const svgHeight = (svg as any).height?.baseVal?.value || svgRect.height || (svgViewBox ? svgViewBox.height : 0);
-                    
-                    console.log(`🔍 EmbedPDFViewer: Processing SVG ${svgIdx}, dimensions: ${svgWidth}x${svgHeight}, rect: ${svgRect.width}x${svgRect.height}`);
-                    
-                    if (svgWidth === 0 || svgHeight === 0) {
-                      console.warn(`⚠️ EmbedPDFViewer: SVG ${svgIdx} has zero dimensions, skipping`);
-                      continue;
-                    }
-                    
-                    // Set explicit width/height on SVG for proper rendering
-                    const svgClone = svg.cloneNode(true) as SVGSVGElement;
-                    if (!svgClone.hasAttribute('width')) {
-                      svgClone.setAttribute('width', String(svgWidth));
-                    }
-                    if (!svgClone.hasAttribute('height')) {
-                      svgClone.setAttribute('height', String(svgHeight));
-                    }
-                    if (!svgClone.hasAttribute('viewBox') && svgViewBox) {
-                      svgClone.setAttribute('viewBox', `${svgViewBox.x} ${svgViewBox.y} ${svgViewBox.width} ${svgViewBox.height}`);
-                    }
-                    
-                    // Convert SVG to image and draw it
-                    const svgData = new XMLSerializer().serializeToString(svgClone);
-                    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-                    const svgUrl = URL.createObjectURL(svgBlob);
-                    
-                    const img = new Image();
-                    await new Promise<void>((resolve) => {
-                      img.onload = () => {
-                        // Calculate position and scale
-                        const x = svgRect.left - baseRect.left;
-                        const y = svgRect.top - baseRect.top;
-                        
-                        // Scale to match canvas dimensions
-                        const scaleX = compositeCanvas.width / baseRect.width;
-                        const scaleY = compositeCanvas.height / baseRect.height;
-                        
-                        console.log(`🔍 EmbedPDFViewer: Drawing SVG ${svgIdx} at (${x * scaleX}, ${y * scaleY}), size: ${svgRect.width * scaleX}x${svgRect.height * scaleY}`);
-                        
-                        compositeCtx.drawImage(
-                          img,
-                          x * scaleX,
-                          y * scaleY,
-                          svgRect.width * scaleX,
-                          svgRect.height * scaleY
-                        );
-                        URL.revokeObjectURL(svgUrl);
-                        resolve();
-                      };
-                      img.onerror = (error) => {
-                        URL.revokeObjectURL(svgUrl);
-                        console.warn(`⚠️ EmbedPDFViewer: Failed to load SVG ${svgIdx} for page ${pageIdx + 1}:`, error);
-                        resolve(); // Continue even if SVG fails
-                      };
-                      img.src = svgUrl;
-                    });
-                  } catch (svgError) {
-                    console.warn(`⚠️ EmbedPDFViewer: Error processing SVG ${svgIdx} for page ${pageIdx + 1}:`, svgError);
-                  }
-                }
-                
-                // Convert composite canvas to blob
-                const compositeBlob = await new Promise<Blob>((resolve, reject) => {
-                  compositeCanvas.toBlob((blob) => {
-                    if (blob) resolve(blob);
-                    else reject(new Error('Failed to convert composite canvas to blob'));
-                  }, 'image/png', 1.0);
-                });
-                
-                // Embed in PDF
-                const imageBytes = await compositeBlob.arrayBuffer();
-                const pngImage = await pdfDoc.embedPng(imageBytes);
-                const page = pdfDoc.addPage([pngImage.width, pngImage.height]);
-                page.drawImage(pngImage, {
-                  x: 0,
-                  y: 0,
-                  width: pngImage.width,
-                  height: pngImage.height,
-                });
-                
-                console.log(`✅ EmbedPDFViewer: Added composite page ${pageIdx + 1} to PDF, dimensions: ${pngImage.width}x${pngImage.height}`);
-              }
-            } else {
-              // Fallback: Use viewport-level canvases and SVGs
-              console.log(`🔍 EmbedPDFViewer: No page containers found, using viewport-level elements...`);
-              
-              // Find the largest canvas
-              let mainCanvas: HTMLCanvasElement | null = null;
-              let maxArea = 0;
-              for (let i = 0; i < validCanvases.length; i++) {
-                const canvas = validCanvases[i];
-                const area = canvas.width * canvas.height;
-                if (area > maxArea) {
-                  maxArea = area;
-                  mainCanvas = canvas;
-                }
-              }
-              
-              if (!mainCanvas) {
-                console.warn('⚠️ EmbedPDFViewer: No valid canvas found, using exported PDF directly');
-                finalPdfBlob = annotatedPdfBlob;
-              } else {
-                const canvasWidth = mainCanvas.width;
-                const canvasHeight = mainCanvas.height;
-                
-                // Create composite canvas
-                const compositeCanvas = document.createElement('canvas');
-                compositeCanvas.width = canvasWidth;
-                compositeCanvas.height = canvasHeight;
-                const compositeCtx = compositeCanvas.getContext('2d');
-                
-                if (!compositeCtx) {
-                  console.error('❌ EmbedPDFViewer: Failed to get composite canvas context');
-                  finalPdfBlob = annotatedPdfBlob;
-                } else {
-                  // Fill with white
-                  compositeCtx.fillStyle = 'white';
-                  compositeCtx.fillRect(0, 0, compositeCanvas.width, compositeCanvas.height);
-                  
-                  // Draw PDF canvas
-                  compositeCtx.drawImage(mainCanvas, 0, 0);
-                  
-                  // Draw SVGs on top
-                  const viewportRect = viewportWrapperRef.current?.getBoundingClientRect();
-                  if (viewportRect && allSvgs.length > 0) {
-                    console.log(`🔍 EmbedPDFViewer: Drawing ${allSvgs.length} SVG(s) on composite canvas`);
-                    for (let svgIdx = 0; svgIdx < allSvgs.length; svgIdx++) {
-                      const svg = allSvgs[svgIdx] as SVGSVGElement;
-                      try {
-                        const svgRect = svg.getBoundingClientRect();
-                        const svgViewBox = svg.viewBox?.baseVal;
-                        const svgWidth = (svg as any).width?.baseVal?.value || svgRect.width || (svgViewBox ? svgViewBox.width : 0);
-                        const svgHeight = (svg as any).height?.baseVal?.value || svgRect.height || (svgViewBox ? svgViewBox.height : 0);
-                        
-                        if (svgWidth > 0 && svgHeight > 0) {
-                          const svgClone = svg.cloneNode(true) as SVGSVGElement;
-                          if (!svgClone.hasAttribute('width')) svgClone.setAttribute('width', String(svgWidth));
-                          if (!svgClone.hasAttribute('height')) svgClone.setAttribute('height', String(svgHeight));
-                          if (!svgClone.hasAttribute('viewBox') && svgViewBox) {
-                            svgClone.setAttribute('viewBox', `${svgViewBox.x} ${svgViewBox.y} ${svgViewBox.width} ${svgViewBox.height}`);
-                          }
-                          
-                          const svgData = new XMLSerializer().serializeToString(svgClone);
-                          const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-                          const svgUrl = URL.createObjectURL(svgBlob);
-                          
-                          const img = new Image();
-                          await new Promise<void>((resolve) => {
-                            img.onload = () => {
-                              const scaleX = compositeCanvas.width / viewportRect.width;
-                              const scaleY = compositeCanvas.height / viewportRect.height;
-                              const x = (svgRect.left - viewportRect.left) * scaleX;
-                              const y = (svgRect.top - viewportRect.top) * scaleY;
-                              
-                              compositeCtx.drawImage(img, x, y, svgRect.width * scaleX, svgRect.height * scaleY);
-                              URL.revokeObjectURL(svgUrl);
-                              resolve();
-                            };
-                            img.onerror = () => {
-                              URL.revokeObjectURL(svgUrl);
-                              resolve();
-                            };
-                            img.src = svgUrl;
-                          });
-                        }
-                      } catch (svgError) {
-                        console.warn(`⚠️ EmbedPDFViewer: Error processing SVG ${svgIdx}:`, svgError);
-                      }
-                    }
-                  }
-                  
-                  // Convert to PDF
-                  const compositeBlob = await new Promise<Blob>((resolve, reject) => {
-                    compositeCanvas.toBlob((blob) => {
-                      if (blob) resolve(blob);
-                      else reject(new Error('Failed to convert composite canvas to blob'));
-                    }, 'image/png', 1.0);
-                  });
-                  
-                  const imageBytes = await compositeBlob.arrayBuffer();
-                  const pngImage = await pdfDoc.embedPng(imageBytes);
-                  const page = pdfDoc.addPage([pngImage.width, pngImage.height]);
-                  page.drawImage(pngImage, {
-                    x: 0,
-                    y: 0,
-                    width: pngImage.width,
-                    height: pngImage.height,
-                  });
-                  
-                  console.log(`✅ EmbedPDFViewer: Added composite page to PDF, dimensions: ${pngImage.width}x${pngImage.height}`);
-                }
-              }
-            }
-            
-            // Save the PDF
-            const flattenedPdfBytes = await pdfDoc.save();
-            const arrayBuffer = flattenedPdfBytes.buffer instanceof ArrayBuffer 
-              ? flattenedPdfBytes.buffer.slice(flattenedPdfBytes.byteOffset, flattenedPdfBytes.byteOffset + flattenedPdfBytes.byteLength)
-              : new Uint8Array(flattenedPdfBytes).buffer;
-            
-            finalPdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
-            console.log('✅ EmbedPDFViewer: Annotations flattened using composite canvas capture, size:', finalPdfBlob.size);
           }
         }
-        }
-      } catch (canvasCaptureError) {
-        console.error('❌ EmbedPDFViewer: Error capturing canvas:', canvasCaptureError);
-        console.warn('⚠️ EmbedPDFViewer: Using exported PDF directly as fallback');
-        // Use the exported PDF directly as fallback
-        finalPdfBlob = annotatedPdfBlob;
       }
-      
-      console.log('🔍 EmbedPDFViewer: About to call onSave with finalPdfBlob, size:', finalPdfBlob.size);
-      
-      // Create preview image from the final PDF using PDF.js
+
+      // Calculate the scale factor from PDF points to rendered pixels
+      const scaleX = renderedPageWidth / pdfPageWidth;
+      const scaleY = renderedPageHeight / pdfPageHeight;
+      console.log('🔍 EmbedPDFViewer: Scale factors (rendered pixels / PDF points):', { scaleX, scaleY });
+
+      // Use unified signature handler to embed signature
+      // Pass the rendered page dimensions (pixels) which match the annotation coordinate space
+      let signedPdfBytes: Uint8Array;
       try {
-        const pdfjsDoc = await pdfjsLib.getDocument({ data: await finalPdfBlob.arrayBuffer() }).promise;
+        signedPdfBytes = await savePDFWithEmbedPDFSignature(
+          originalPdfBytes,
+          annotationState,
+          renderedPageWidth,  // Use rendered page width (annotation coordinate space)
+          renderedPageHeight, // Use rendered page height (annotation coordinate space)
+          0, // pageIndex (0-based)
+          true // flatten
+        );
+        console.log('🔍 EmbedPDFViewer: Signature embedded successfully, size:', signedPdfBytes.byteLength);
+      } catch (signatureError) {
+        console.error('❌ EmbedPDFViewer: Error embedding signature with unified handler:', signatureError);
+        console.warn('⚠️ EmbedPDFViewer: Falling back to PDF without signature embedding');
+        // If signature embedding fails, just flatten the PDF without signature
+        const pdfDoc = await PDFLib.PDFDocument.load(originalPdfBytes);
+        try {
+          const form = pdfDoc.getForm();
+          form.flatten();
+        } catch (flattenError) {
+          console.warn('⚠️ EmbedPDFViewer: Could not flatten form:', flattenError);
+        }
+        signedPdfBytes = await pdfDoc.save();
+      }
+
+      // Convert to Blob
+      const signedPdfBlob = new Blob([signedPdfBytes], { type: 'application/pdf' });
+
+      // Create preview image from the signed PDF using PDF.js
+      try {
+        const pdfjsDoc = await pdfjsLib.getDocument({ data: signedPdfBytes }).promise;
         const pdfjsPage = await pdfjsDoc.getPage(1);
-        const viewport = pdfjsPage.getViewport({ scale: 2.0 });
+        const previewViewport = pdfjsPage.getViewport({ scale: 2.0 });
         
         const previewCanvas = document.createElement('canvas');
-        previewCanvas.width = viewport.width;
-        previewCanvas.height = viewport.height;
+        previewCanvas.width = previewViewport.width;
+        previewCanvas.height = previewViewport.height;
         const ctx = previewCanvas.getContext('2d');
         
         if (ctx) {
-          await pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
+          await pdfjsPage.render({ canvasContext: ctx, viewport: previewViewport }).promise;
           const previewBlob = await new Promise<Blob>((resolve) => {
             previewCanvas.toBlob((blob) => resolve(blob || new Blob()), 'image/png');
           });
           
-          // Pass the flattened PDF with annotations rendered as content
-          onSave(finalPdfBlob, previewBlob);
+          onSave(signedPdfBlob, previewBlob);
         } else {
-          // If preview generation fails, still save the PDF
           console.warn('🔍 EmbedPDFViewer: Could not generate preview, saving PDF anyway');
           const emptyPreview = new Blob([], { type: 'image/png' });
-          onSave(finalPdfBlob, emptyPreview);
+          onSave(signedPdfBlob, emptyPreview);
         }
       } catch (previewError) {
-        // If preview generation fails, still save the PDF
         console.warn('🔍 EmbedPDFViewer: Preview generation failed, saving PDF anyway:', previewError);
         const emptyPreview = new Blob([], { type: 'image/png' });
-        onSave(finalPdfBlob, emptyPreview);
+        onSave(signedPdfBlob, emptyPreview);
       }
     } catch (error) {
       console.error('🔍 EmbedPDFViewer: Error saving PDF:', error);
       setComponentError(error instanceof Error ? error.message : 'Failed to save PDF');
     }
-  }, [onSave]);
+  }, [onSave, pdfDocRef]);
 
   // Handle downloading the original PDF
   const handleDownload = useCallback(async () => {
@@ -894,6 +762,15 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                 <Scroller
                   renderPage={({ width, height, pageIndex, scale, rotation }) => {
                     console.log('🔍 Scroller: renderPage called for page', pageIndex, 'width:', width, 'height:', height, 'scale:', scale);
+                    
+                    // Store page dimensions for coordinate conversion
+                    const existingIndex = pageDimensionsRef.current.findIndex(p => p.pageIndex === pageIndex);
+                    if (existingIndex >= 0) {
+                      pageDimensionsRef.current[existingIndex] = { width, height, pageIndex };
+                    } else {
+                      pageDimensionsRef.current.push({ width, height, pageIndex });
+                    }
+                    
                     return (
                       <PagePointerProvider
                         pageIndex={pageIndex}
