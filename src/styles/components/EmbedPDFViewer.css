@@ -7,7 +7,7 @@
   flex-direction: column !important;
   align-items: center !important;
   position: relative !important;
-  gap: 10px !important;
+  gap: 1px !important;
   visibility: visible !important;
   opacity: 1 !important;
 }

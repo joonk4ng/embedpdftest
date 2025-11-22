@@ -583,7 +583,7 @@ form {
 
 .selector-tabs {
   display: flex;
-  gap: 10px;
+  gap: 1px;
   flex-wrap: wrap;
   flex-direction: column;
   align-items: flex-start;
@@ -980,7 +980,7 @@ form {
   /* Stack action buttons vertically on mobile */
   .action-buttons {
     flex-direction: column;
-    gap: 10px;
+    gap: 1px;
     align-items: center;
   }
 

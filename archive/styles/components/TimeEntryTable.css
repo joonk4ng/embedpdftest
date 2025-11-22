@@ -225,7 +225,7 @@
 .equipment-use-selector {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 1px;
 }
 
 .equipment-use-selector label {

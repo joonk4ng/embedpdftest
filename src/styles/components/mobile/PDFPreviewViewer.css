@@ -1,7 +1,7 @@
 /* PDF Preview Viewer - Mobile Styles */
 @media (max-width: 768px) {
   .pdf-preview-viewer {
-    padding: 10px;
+    padding: 1px;
   }
   
   .pdf-preview-viewer img {
@@ -12,7 +12,7 @@
   
   .pdf-preview-actions {
     margin-top: 15px;
-    gap: 10px;
+    gap: 1px;
   }
   
   .action-select {
