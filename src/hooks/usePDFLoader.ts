@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getPDF } from '../utils/pdfStorage';
+import { getPDF, updateFormData, updateTimeEntries, updateCheckboxStates } from '../utils/pdfStorage';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as PDFLib from 'pdf-lib';
 import { 
@@ -235,12 +235,12 @@ export const usePDFLoader = (
             
             console.log(`🔍 usePDFLoader: Found ${filledFieldsCount} filled fields out of ${fields.length} total fields`);
             
-            // If the PDF has form fields but none are filled, fill it now
+            // If the PDF has form fields but none are filled, store form data as metadata
             if (fields.length > 0 && filledFieldsCount === 0) {
-              console.warn('⚠️ usePDFLoader: PDF has form fields but none appear to be filled. Attempting to fill PDF with data from database...');
+              console.warn('⚠️ usePDFLoader: PDF has form fields but none appear to be filled. Storing form data as metadata overlay...');
               
               try {
-                // Only fill Federal forms (pdfId === 'federal-form')
+                // Only process Federal forms (pdfId === 'federal-form')
                 if (pdfId === 'federal-form') {
                   // Load form data from database
                   const formData = await loadFederalFormData();
@@ -276,72 +276,77 @@ export const usePDFLoader = (
                       checkboxStates
                     );
                     
-                    console.log('🔍 usePDFLoader: Filling PDF with', Object.keys(pdfFields).length, 'fields...');
+                    console.log('🔍 usePDFLoader: Storing form data as metadata overlay (', Object.keys(pdfFields).length, 'fields)...');
                     
-                    // Fill the form fields
-                    let filledCount = 0;
-                    Object.entries(pdfFields).forEach(([fieldName, value]) => {
-                      try {
-                        const field = form.getField(fieldName);
-                        if (field) {
-                          const hasSetText = typeof (field as any).setText === 'function';
-                          const hasCheck = typeof (field as any).check === 'function';
-                          const hasSelect = typeof (field as any).select === 'function';
-                          
-                          if (hasSetText) {
-                            (field as any).setText(value);
-                            filledCount++;
-                          } else if (hasCheck) {
-                            if (value === 'Yes' || value === 'On' || value === 'YES' || value === 'HOURS') {
-                              (field as any).check();
-                            } else {
-                              (field as any).uncheck();
-                            }
-                            filledCount++;
-                          } else if (hasSelect) {
-                            (field as any).select(value);
-                            filledCount++;
-                          }
-                        }
-                      } catch (fieldError) {
-                        console.warn(`⚠️ usePDFLoader: Error filling field ${fieldName}:`, fieldError);
-                      }
-                    });
+                    // Store form data as JSON metadata (NOT burning into PDF)
+                    try {
+                      await updateFormData(pdfId, {
+                        fields: pdfFields,
+                        formType: 'federal',
+                        lastModified: new Date().toISOString()
+                      });
+                      console.log('✅ usePDFLoader: Form data stored as metadata overlay');
+                    } catch (metadataError) {
+                      console.error('⚠️ usePDFLoader: Error storing form data metadata:', metadataError);
+                    }
                     
-                    console.log(`🔍 usePDFLoader: Successfully filled ${filledCount} fields`);
+                    // Store checkbox states separately
+                    try {
+                      await updateCheckboxStates(pdfId, checkboxStates);
+                      console.log('✅ usePDFLoader: Checkbox states stored as metadata');
+                    } catch (checkboxError) {
+                      console.error('⚠️ usePDFLoader: Error storing checkbox states:', checkboxError);
+                    }
                     
-                    // Update the pdfDoc reference for flattening
-                    // The form is already filled in the current pdfDoc, so we can use it directly
-                    filledFieldsCount = filledCount;
+                    // Store time entries separately
+                    try {
+                      await updateTimeEntries(pdfId, {
+                        equipmentEntries: equipmentEntries.map(e => ({
+                          id: e.id,
+                          date: e.date,
+                          start: e.start,
+                          stop: e.stop,
+                          start1: e.start1,
+                          stop1: e.stop1,
+                          start2: e.start2,
+                          stop2: e.stop2,
+                          total: e.total,
+                          quantity: e.quantity,
+                          type: e.type,
+                          remarks: e.remarks
+                        })),
+                        personnelEntries: personnelEntries.map(p => ({
+                          id: p.id,
+                          date: p.date,
+                          name: p.name,
+                          start1: p.start1,
+                          stop1: p.stop1,
+                          start2: p.start2,
+                          stop2: p.stop2,
+                          total: p.total,
+                          remarks: p.remarks
+                        }))
+                      });
+                      console.log('✅ usePDFLoader: Time entries stored as metadata');
+                    } catch (timeEntryError) {
+                      console.error('⚠️ usePDFLoader: Error storing time entries:', timeEntryError);
+                    }
+                    
+                    filledFieldsCount = Object.keys(pdfFields).length;
+                    console.log(`✅ usePDFLoader: Metadata overlay stored (${filledFieldsCount} fields). PDF binary remains unchanged.`);
                   } else {
-                    console.warn('⚠️ usePDFLoader: No form data found in database to fill PDF');
+                    console.warn('⚠️ usePDFLoader: No form data found in database to store as metadata');
                   }
                 }
-              } catch (fillError) {
-                console.error('⚠️ usePDFLoader: Error filling PDF:', fillError);
-                // Continue with unfilled PDF if filling fails
+              } catch (metadataError) {
+                console.error('⚠️ usePDFLoader: Error storing form data as metadata:', metadataError);
+                // Continue with unfilled PDF if metadata storage fails
               }
             }
             
-            // Save the PDF document if we filled it or if it was already filled
-            // This ensures we have a fresh blob with the current state
-            // Don't flatten - EmbedPDF should be able to display filled form fields and add annotations
-            // Flattening can interfere with annotation saving, so let's try without it
-            try {
-              console.log('🔍 usePDFLoader: Saving PDF document (filledFieldsCount:', filledFieldsCount, ')...');
-              const savedBytes = await pdfDoc.save();
-              // Convert Uint8Array to ArrayBuffer for Blob
-              const arrayBuffer = savedBytes.buffer instanceof ArrayBuffer 
-                ? savedBytes.buffer.slice(savedBytes.byteOffset, savedBytes.byteOffset + savedBytes.byteLength)
-                : new Uint8Array(savedBytes).buffer;
-              finalPdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
-              console.log('🔍 usePDFLoader: PDF saved, new blob size:', finalPdfBlob.size, '(filledFieldsCount:', filledFieldsCount, ')');
-              console.log('🔍 usePDFLoader: Using PDF with form structure preserved for annotations');
-            } catch (saveError) {
-              console.error('⚠️ usePDFLoader: Could not save PDF:', saveError);
-              // Fallback to original blob if save fails
-              finalPdfBlob = new Blob([pdfArrayBuffer], { type: 'application/pdf' });
-            }
+            // Keep PDF binary unchanged - don't save modifications
+            // Form data is now stored as metadata overlay, not burned into PDF
+            console.log('🔍 usePDFLoader: Using original PDF binary (form data stored as metadata overlay)');
           } catch (pdfLibError) {
             console.warn('🔍 usePDFLoader: Could not verify form fields with pdf-lib, continuing anyway:', pdfLibError);
             // Continue with the PDF blob we already created

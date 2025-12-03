@@ -9,6 +9,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import * as PDFLib from 'pdf-lib';
 import { usePDFLoader } from '../../hooks/usePDFLoader';
 import { logTrace } from '../../utils/signingSystemDebug';
+import { updateAnnotations, updateRendering, getPDF } from '../../utils/pdfStorage';
+import { convertEmbedPDFAnnotationsToMetadata, convertMetadataToEmbedPDFFormat } from '../../utils/PDF/annotationConverter';
 import '../../styles/components/EmbedPDFViewer.css';
 
 // EmbedPDF imports
@@ -107,6 +109,46 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
 
   // Load PDF using custom hook
   const { pdfUrl, plugins, isLoading, error, pdfDocRef } = usePDFLoader(pdfId, pdfBlob, date);
+  
+  // Load annotations from metadata when PDF is ready
+  useEffect(() => {
+    if (!pdfId || isLoading || !pdfUrl || !annotationControlsRef.current) {
+      return;
+    }
+    
+    const loadAnnotationsFromMetadata = async () => {
+      try {
+        const pdfData = await getPDF(pdfId);
+        if (pdfData?.annotations && pdfData.annotations.length > 0) {
+          console.log('🔍 EmbedPDFViewer: Loading annotations from metadata...', pdfData.annotations.length);
+          
+          // Convert metadata back to EmbedPDF format
+          const embedPDFAnnotations = convertMetadataToEmbedPDFFormat(pdfData.annotations);
+          
+          // Load annotations into EmbedPDF
+          // Note: This requires the annotation controls to be ready
+          // We'll need to check if there's a method to load annotations
+          const annotationProvides = annotationControlsRef.current?.getAnnotationProvides();
+          if (annotationProvides && typeof (annotationProvides as any).loadAnnotations === 'function') {
+            await (annotationProvides as any).loadAnnotations(embedPDFAnnotations);
+            console.log('✅ EmbedPDFViewer: Loaded annotations from metadata');
+          } else {
+            console.warn('⚠️ EmbedPDFViewer: Cannot load annotations - loadAnnotations method not available');
+            console.log('🔍 EmbedPDFViewer: Annotation provides methods:', Object.keys(annotationProvides || {}));
+          }
+        }
+      } catch (error) {
+        console.error('⚠️ EmbedPDFViewer: Error loading annotations from metadata:', error);
+      }
+    };
+    
+    // Wait a bit for EmbedPDF to fully initialize
+    const timer = setTimeout(() => {
+      loadAnnotationsFromMetadata();
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, [pdfId, pdfUrl, isLoading]);
   
   // Debug: Log PDF loading state
   useEffect(() => {
@@ -429,6 +471,36 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
       const scaleY = renderedPageHeight / pdfPageHeight;
       console.log('🔍 EmbedPDFViewer: Scale factors (rendered pixels / PDF points):', { scaleX, scaleY });
 
+      // Store annotations as JSON metadata (NOT burning into PDF)
+      if (pdfId && allAnnotationsToProcess.length > 0) {
+        try {
+          console.log('🔍 EmbedPDFViewer: Storing annotations as metadata overlay...');
+          
+          // Convert EmbedPDF annotations to metadata format
+          const annotationsMetadata = convertEmbedPDFAnnotationsToMetadata(
+            annotationState,
+            pageDimensionsRef.current
+          );
+          
+          // Store annotations as JSON metadata
+          await updateAnnotations(pdfId, annotationsMetadata);
+          console.log(`✅ EmbedPDFViewer: Stored ${annotationsMetadata.length} annotations as metadata overlay`);
+          
+          // Store rendering metadata for coordinate conversion
+          await updateRendering(pdfId, {
+            pageDimensions: pageDimensionsRef.current,
+            zoomLevel: getCurrentZoom(),
+            devicePixelRatio: window.devicePixelRatio || 1
+          });
+          console.log('✅ EmbedPDFViewer: Stored rendering metadata');
+        } catch (metadataError) {
+          console.error('⚠️ EmbedPDFViewer: Error storing annotations as metadata:', metadataError);
+          // Continue with save even if metadata storage fails
+        }
+      }
+      
+      // For now, still burn annotations into PDF for backward compatibility
+      // TODO: Remove this once we have an export function that burns metadata on final export
       // Use unified signature handler to embed signature
       // Pass the rendered page dimensions (pixels) which match the annotation coordinate space
       let signedPdfBytes: Uint8Array;
