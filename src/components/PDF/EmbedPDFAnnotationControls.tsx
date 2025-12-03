@@ -26,6 +26,18 @@ export const EmbedPDFAnnotationControls = forwardRef<
   const { provides: exportProvides } = useExportCapability();
   const [isInkMode, setIsInkMode] = useState(false);
 
+  // Set default annotation color to black when component mounts
+  useEffect(() => {
+    if (annotationApi) {
+      const apiAny = annotationApi as any;
+      // Use setToolDefaults to set default color for ink tool
+      if (typeof apiAny.setToolDefaults === 'function') {
+        apiAny.setToolDefaults('ink', { color: '#000000' });
+        console.log('✅ Set default ink tool color to black via setToolDefaults');
+      }
+    }
+  }, [annotationApi]);
+  
   // Update ink mode state and notify parent (check if activeToolId is 'ink' or similar)
   useEffect(() => {
     const activeTool = annotationState?.activeToolId;
@@ -623,6 +635,15 @@ export const EmbedPDFAnnotationControls = forwardRef<
         } else {
           console.warn('🔍 Toggle ink method not found. Available methods:', Object.keys(annotationProvides));
           console.warn('🔍 Full annotationProvides object:', annotationProvides);
+        }
+        
+        // Ensure default color is set to black
+        if (annotationApi) {
+          const apiAny = annotationApi as any;
+          if (typeof apiAny.setToolDefaults === 'function') {
+            apiAny.setToolDefaults('ink', { color: '#000000' });
+            console.log('✅ Set default ink tool color to black via setToolDefaults');
+          }
         }
       } else {
         console.warn('🔍 annotationProvides is not available');

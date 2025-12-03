@@ -148,6 +148,17 @@
   background-color: transparent !important;
 }
 
+/* Force annotation strokes to black */
+.embedpdf-viewer svg[class*="annotation"] path,
+.embedpdf-viewer svg[class*="annotation"] line,
+.embedpdf-viewer svg[class*="annotation"] polyline,
+.embedpdf-viewer [data-embedpdf-annotation-layer] svg path,
+.embedpdf-viewer [data-embedpdf-annotation-layer] svg line,
+.embedpdf-viewer [data-embedpdf-annotation-layer] svg polyline {
+  stroke: #000000 !important;
+  stroke-color: #000000 !important;
+}
+
 /* Override white backgrounds only in annotation-related containers */
 .embedpdf-viewer [style*="position: absolute"][style*="background-color: white"]:has([class*="annotation"]),
 .embedpdf-viewer [style*="position: absolute"][style*="background: white"]:has([class*="annotation"]),
