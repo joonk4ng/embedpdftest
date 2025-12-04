@@ -1,0 +1,106 @@
+/* PDF Preview Modal Styles with Y-Transforms */
+.pdf-preview-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding-top: 2.5vh;
+  padding-right: 2.5vw;
+  z-index: 2000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.pdf-preview-modal-content {
+  background-color: white;
+  border-radius: 8px;
+  padding: 20px 20px 20px 40px;
+  width: 85vw;
+  max-width: 85vw;
+  max-height: 90vh;
+  overflow: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  animation: slideInFromTopRight 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes slideInFromTopRight {
+  from {
+    transform: translateY(-30px) translateX(30px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) translateX(0);
+    opacity: 1;
+  }
+}
+
+.pdf-preview-modal-close {
+  position: absolute;
+  top: 10px;
+  right: 15px;
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #666;
+  z-index: 2001;
+  transition: all 0.2s ease;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.pdf-preview-modal-close:hover {
+  color: #333;
+  background: #f0f0f0;
+  transform: translateY(-2px);
+}
+
+.pdf-preview-modal-close:active {
+  transform: translateY(0);
+}
+
+.pdf-preview-modal-button {
+  padding: 10px 20px;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pdf-preview-modal-button-download {
+  background-color: #28a745;
+}
+
+.pdf-preview-modal-button-download:hover {
+  background-color: #218838;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(40, 167, 69, 0.3);
+}
+
+.pdf-preview-modal-button-download:active {
+  transform: translateY(0);
+}
+
+.pdf-preview-modal-button-close {
+  background-color: #6c757d;
+}
+
+.pdf-preview-modal-button-close:hover {
+  background-color: #5a6268;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(108, 117, 125, 0.3);
+}
+
+.pdf-preview-modal-button-close:active {
+  transform: translateY(0);
+}
+

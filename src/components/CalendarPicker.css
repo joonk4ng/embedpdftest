@@ -1,0 +1,78 @@
+/* Calendar Picker Dropdown with Y-Transforms */
+.calendar-picker-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background-color: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e9ecef;
+  z-index: 1000;
+  margin-top: 4px;
+  animation: slideDown 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: top;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.calendar-picker-nav-button {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: #2c3e50;
+  transition: all 0.2s ease;
+}
+
+.calendar-picker-nav-button:hover {
+  background: #f0f0f0;
+  transform: translateY(-2px);
+}
+
+.calendar-picker-nav-button:active {
+  transform: translateY(0);
+}
+
+.calendar-picker-today-button {
+  background: #28a745;
+  color: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.calendar-picker-today-button:hover {
+  background: #218838;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 4px rgba(40, 167, 69, 0.3);
+}
+
+.calendar-picker-today-button:active {
+  transform: translateY(0);
+}
+
+/* Calendar day cells with hover effects */
+.calendar-picker-dropdown [style*="cursor: pointer"] {
+  transition: all 0.2s ease !important;
+}
+
+.calendar-picker-dropdown [style*="cursor: pointer"]:hover {
+  transform: translateY(-1px) !important;
+}
+

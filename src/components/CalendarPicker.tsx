@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import './CalendarPicker.css';
 
 export const CalendarPicker: React.FC<{
   isOpen: boolean;
@@ -101,19 +102,7 @@ export const CalendarPicker: React.FC<{
   return (
     <div 
       ref={calendarRef}
-      style={{
-        position: 'absolute',
-        top: '100%',
-        left: 0,
-        right: 0,
-        backgroundColor: '#fff',
-        borderRadius: '8px',
-        padding: '12px',
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-        border: '1px solid #e9ecef',
-        zIndex: 1000,
-        marginTop: '4px'
-      }} 
+      className="calendar-picker-dropdown"
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
@@ -125,15 +114,7 @@ export const CalendarPicker: React.FC<{
       }}>
         <button
           onClick={goToPreviousMonth}
-          style={{
-            background: 'none',
-            border: 'none',
-            fontSize: '16px',
-            cursor: 'pointer',
-            padding: '4px 8px',
-            borderRadius: '4px',
-            color: '#2c3e50'
-          }}
+          className="calendar-picker-nav-button"
         >
           ‹
         </button>
@@ -147,15 +128,7 @@ export const CalendarPicker: React.FC<{
         </h3>
         <button
           onClick={goToNextMonth}
-          style={{
-            background: 'none',
-            border: 'none',
-            fontSize: '16px',
-            cursor: 'pointer',
-            padding: '4px 8px',
-            borderRadius: '4px',
-            color: '#2c3e50'
-          }}
+          className="calendar-picker-nav-button"
         >
           ›
         </button>
@@ -215,15 +188,7 @@ export const CalendarPicker: React.FC<{
             onSelectDate(formatDate(new Date()));
             onClose();
           }}
-          style={{
-            background: '#28a745',
-            color: '#fff',
-            border: 'none',
-            padding: '6px 12px',
-            borderRadius: '4px',
-            fontSize: '12px',
-            cursor: 'pointer'
-          }}
+          className="calendar-picker-today-button"
         >
           Today
         </button>
