@@ -330,7 +330,7 @@ export const usePDFLoader = (
                       console.log('✅ usePDFLoader: Time entries stored as metadata');
                     } catch (timeEntryError) {
                       console.error('⚠️ usePDFLoader: Error storing time entries:', timeEntryError);
-                    }
+                      }
                     
                     filledFieldsCount = Object.keys(pdfFields).length;
                     console.log(`✅ usePDFLoader: Metadata overlay stored (${filledFieldsCount} fields). PDF binary remains unchanged.`);

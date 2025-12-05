@@ -17,12 +17,26 @@ export interface AnnotationMetadata {
   pageIndex: number;  // 0-based page index
   
   // Coordinate information
-  // Stored in the coordinate space of the rendered page (pixels)
+  // Stored in multiple coordinate spaces for accuracy
   coordinates: {
-    // Bounding rectangle [x1, y1, x2, y2] in rendered pixel space
+    // Bounding rectangle [x1, y1, x2, y2] in rendered pixel space (for display)
     rect?: [number, number, number, number];
     
-    // For ink annotations: array of strokes, each stroke is array of points
+    // PDF coordinates (in points) - converted at creation time for accurate burning
+    pdfCoordinates?: {
+      // Bounding rectangle in PDF coordinate space (points)
+      rect?: [number, number, number, number];
+      
+      // Ink list in PDF coordinate space
+      inkList?: Array<{
+        points: Array<{ x: number; y: number }>;
+      }>;
+      
+      // Text position in PDF coordinate space
+      textPosition?: { x: number; y: number };
+    };
+    
+    // For ink annotations: array of strokes, each stroke is array of points (pixel space for display)
     inkList?: Array<{
       points: Array<{ x: number; y: number }>;
     }>;
@@ -33,6 +47,26 @@ export interface AnnotationMetadata {
     
     // For highlights: array of quads (rectangles)
     quads?: Array<[number, number, number, number, number, number, number, number]>;
+  };
+  
+  // Coordinate space context (captured at annotation creation time)
+  coordinateSpace?: {
+    // Rendered page dimensions at creation time (pixels)
+    renderedPageWidth: number;
+    renderedPageHeight: number;
+    
+    // PDF page dimensions at creation time (points)
+    pdfPageWidth: number;
+    pdfPageHeight: number;
+    
+    // Scale factors used for conversion
+    scaleX: number;  // pdfWidth / renderedWidth
+    scaleY: number;  // pdfHeight / renderedHeight
+    
+    // Additional context
+    zoomLevel?: number;
+    devicePixelRatio?: number;
+    scale?: number;  // From renderPage callback
   };
   
   // Visual properties

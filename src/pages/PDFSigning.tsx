@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { EmbedPDFViewer } from '../components/PDF/EmbedPDFViewer';
+import { EmbedPDFViewerSecondary } from '../components/PDF/EmbedPDFViewerSecondary';
 import { getPDF, storePDFWithId } from '../utils/pdfStorage';
 import { logTrace, quickCheckPDF, traceSigningSystem, checkAllPDFs } from '../utils/signingSystemDebug';
 
@@ -252,22 +252,29 @@ const PDFSigning: React.FC = () => {
         flex: 1,
         width: '100%',
         height: 'calc(100vh - 60px)',
-        overflow: 'auto',
+        overflow: 'hidden', // Prevent outer scroll - let viewer handle it
         backgroundColor: '#f5f5f5',
         position: 'relative',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
-        padding: '20px',
+        alignItems: 'stretch',
+        justifyContent: 'stretch',
+        padding: 0, // Remove padding - let viewer handle it
         boxSizing: 'border-box'
       }}>
-        <EmbedPDFViewer
-          pdfId={pdfId}
-          onSave={handleSave}
-          crewInfo={crewInfo}
-          date={date}
-        />
+        {/* Use secondary viewer with ViewportPluginPackage */}
+        {(() => {
+          console.log('🔍 PDFSigning: Rendering EmbedPDFViewerSecondary (with ViewportPluginPackage, viewportGap: 10)');
+          return (
+            <EmbedPDFViewerSecondary
+              pdfId={pdfId}
+              onSave={handleSave}
+              crewInfo={crewInfo}
+              date={date}
+              style={{ height: '100%' }} // Fill parent height
+            />
+          );
+        })()}
       </div>
     </div>,
     document.body

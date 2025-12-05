@@ -1,43 +1,44 @@
 /* EmbedPDF Viewer Styles */
 .embedpdf-viewer-wrapper {
   width: 100% !important;
-  height: auto !important;
-  min-height: 400px !important;
+  height: 100% !important;
   display: flex !important;
   flex-direction: column !important;
-  align-items: center !important;
+  align-items: stretch !important;
   position: relative !important;
-  gap: 1px !important;
+  gap: 0 !important;
   visibility: visible !important;
   opacity: 1 !important;
+  overflow: hidden !important; /* Prevent wrapper from growing */
 }
 
 .embedpdf-viewer {
   width: 100% !important;
-  height: auto !important;
-  min-height: 400px !important;
+  flex: 1 !important; /* Take available space */
+  min-height: 0 !important; /* Allow flex to shrink */
   position: relative !important;
-  overflow: auto !important;
+  overflow: auto !important; /* Make scrollable */
   background-color: #f5f5f5 !important;
   visibility: visible !important;
   opacity: 1 !important;
-  display: block !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
 }
 
 .embedpdf-viewer .pdf-container {
   width: 100% !important;
-  height: auto !important;
-  min-height: 400px !important;
   display: flex !important;
   flex-direction: column !important;
   align-items: center !important;
-  justify-content: center !important;
+  justify-content: flex-start !important;
   position: relative !important;
   padding: 20px 10px !important;
   box-sizing: border-box !important;
   margin: 0 auto !important;
   visibility: visible !important;
   opacity: 1 !important;
+  min-height: min-content !important; /* Allow content to determine height */
 }
 
 /* Ensure EmbedPDF content is visible */
@@ -270,23 +271,33 @@
 .embedpdf-viewer [class*="Viewport"] {
   /* Ensure smooth scrolling at all zoom levels */
   scroll-behavior: auto;
-  /* Ensure it has a height for scrolling to work */
-  height: 100% !important;
+  /* Don't force height - let content determine size */
   min-height: 400px !important;
   /* Enable touch scrolling on iOS */
   -webkit-overflow-scrolling: touch !important;
+  /* Allow viewport to size based on content */
+  flex: 0 0 auto !important;
+}
+
+/* Action buttons - fixed at bottom */
+.embedpdf-viewer-wrapper .action-buttons-external {
+  position: sticky;
+  bottom: 0;
+  background-color: #f5f5f5;
+  border-top: 1px solid #dee2e6;
+  z-index: 100;
+  flex-shrink: 0;
 }
 
 /* Mobile responsive */
 @media (max-width: 768px) {
   .embedpdf-viewer-wrapper {
-    gap: 8px;
+    height: 100% !important;
   }
   
   .embedpdf-viewer {
-    min-height: 300px;
-    height: 100vh;
-    max-height: 100vh;
+    flex: 1 !important;
+    min-height: 0 !important;
     overflow: auto !important;
     -webkit-overflow-scrolling: touch !important;
     touch-action: pan-x pan-y pinch-zoom !important;
@@ -294,16 +305,16 @@
   
   .embedpdf-viewer .pdf-container {
     padding: 10px;
-    min-height: 300px;
     touch-action: pan-x pan-y pinch-zoom !important;
   }
   
-  /* Ensure Viewport is scrollable on mobile */
-  .embedpdf-viewer > div > div {
-    height: 100% !important;
-    overflow: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-    touch-action: pan-x pan-y pinch-zoom !important;
+  /* Action buttons on mobile */
+  .embedpdf-viewer-wrapper > div:last-child {
+    position: sticky;
+    bottom: 0;
+    background-color: #f5f5f5;
+    border-top: 1px solid #dee2e6;
+    z-index: 100;
   }
 }
 

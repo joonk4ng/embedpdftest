@@ -66,7 +66,11 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
   const embedPdfEngineRef = useRef<any>(null);
   
   // Store page dimensions from renderPage callback (used by annotation layer)
-  const pageDimensionsRef = useRef<{ width: number; height: number; pageIndex: number }[]>([]);
+  // Now includes scale parameter for accurate coordinate conversion
+  const pageDimensionsRef = useRef<{ width: number; height: number; pageIndex: number; scale?: number }[]>([]);
+  
+  // Store PDF page dimensions (points) - doesn't change
+  const pdfPageDimensionsRef = useRef<{ width: number; height: number } | null>(null);
   
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [componentError, setComponentError] = useState<string | null>(null);
@@ -415,6 +419,9 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
       const pdfPageWidth = pdfViewport.width;
       const pdfPageHeight = pdfViewport.height;
       console.log('🔍 EmbedPDFViewer: PDF page dimensions (points):', { width: pdfPageWidth, height: pdfPageHeight });
+      
+      // Store PDF page dimensions (these don't change)
+      pdfPageDimensionsRef.current = { width: pdfPageWidth, height: pdfPageHeight };
 
       // Get the annotation layer page dimensions (from PagePointerProvider)
       // These are the dimensions that annotations use for their coordinate space
@@ -476,17 +483,51 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
         try {
           console.log('🔍 EmbedPDFViewer: Storing annotations as metadata overlay...');
           
-          // Convert EmbedPDF annotations to metadata format
+          // Prepare coordinate space context for each page
+          // Use the stored page dimensions which include the scale parameter from renderPage
+          // This ensures we use the exact coordinate space that was active when annotations were created
+          const coordinateSpaceContexts = pageDimensionsRef.current.map(pageDim => {
+            // Use stored PDF page dimensions (consistent across renders)
+            const pdfDims = pdfPageDimensionsRef.current || { width: pdfPageWidth, height: pdfPageHeight };
+            
+            // Use the scale from renderPage if available, otherwise calculate from dimensions
+            const scale = pageDim.scale ?? (pageDim.width / pdfDims.width);
+            
+            const context = {
+              pageIndex: pageDim.pageIndex,
+              context: {
+                renderedPageWidth: pageDim.width,
+                renderedPageHeight: pageDim.height,
+                pdfPageWidth: pdfDims.width,
+                pdfPageHeight: pdfDims.height,
+                zoomLevel: getCurrentZoom(),
+                devicePixelRatio: window.devicePixelRatio || 1,
+                scale: scale  // Use scale from renderPage callback
+              } as import('../../utils/PDF/annotationConverter').CoordinateSpaceContext
+            };
+            
+            console.log('🔍 EmbedPDFViewer: Coordinate space context for page', pageDim.pageIndex, {
+              rendered: { width: pageDim.width, height: pageDim.height },
+              pdf: { width: pdfDims.width, height: pdfDims.height },
+              scale: scale,
+              scaleFromCallback: pageDim.scale
+            });
+            
+            return context;
+          });
+          
+          // Convert EmbedPDF annotations to metadata format with coordinate space context
           const annotationsMetadata = convertEmbedPDFAnnotationsToMetadata(
             annotationState,
-            pageDimensionsRef.current
+            pageDimensionsRef.current,
+            coordinateSpaceContexts
           );
           
           // Store annotations as JSON metadata
           await updateAnnotations(pdfId, annotationsMetadata);
-          console.log(`✅ EmbedPDFViewer: Stored ${annotationsMetadata.length} annotations as metadata overlay`);
+          console.log(`✅ EmbedPDFViewer: Stored ${annotationsMetadata.length} annotations as metadata overlay with PDF coordinates`);
           
-          // Store rendering metadata for coordinate conversion
+          // Store rendering metadata for coordinate conversion (for backward compatibility)
           await updateRendering(pdfId, {
             pageDimensions: pageDimensionsRef.current,
             zoomLevel: getCurrentZoom(),
@@ -502,16 +543,31 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
       // For now, still burn annotations into PDF for backward compatibility
       // TODO: Remove this once we have an export function that burns metadata on final export
       // Use unified signature handler to embed signature
-      // Pass the rendered page dimensions (pixels) which match the annotation coordinate space
+      // Pass stored annotation metadata with PDF coordinates for accurate positioning
       let signedPdfBytes: Uint8Array;
       try {
+        // Get stored annotations metadata if available (contains PDF coordinates)
+        let storedAnnotationsMetadata: any[] | undefined;
+        if (pdfId) {
+          try {
+            const pdfData = await getPDF(pdfId);
+            storedAnnotationsMetadata = pdfData?.annotations;
+            if (storedAnnotationsMetadata && storedAnnotationsMetadata.length > 0) {
+              console.log('✅ EmbedPDFViewer: Using stored annotation metadata with PDF coordinates for accurate positioning');
+            }
+          } catch (e) {
+            console.warn('⚠️ EmbedPDFViewer: Could not load stored annotations metadata:', e);
+          }
+        }
+        
         signedPdfBytes = await savePDFWithEmbedPDFSignature(
           originalPdfBytes,
           annotationState,
           renderedPageWidth,  // Use rendered page width (annotation coordinate space)
           renderedPageHeight, // Use rendered page height (annotation coordinate space)
           0, // pageIndex (0-based)
-          true // flatten
+          true, // flatten
+          storedAnnotationsMetadata // Pass stored metadata with PDF coordinates
         );
         console.log('🔍 EmbedPDFViewer: Signature embedded successfully, size:', signedPdfBytes.byteLength);
       } catch (signatureError) {
@@ -758,12 +814,12 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
       style={{
         ...style,
         width: '100%',
-        height: 'auto',
-        minHeight: '400px',
+        height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
+        alignItems: 'stretch',
         position: 'relative',
+        overflow: 'hidden', // Prevent wrapper from growing
       }}
     >
       {displayError && (
@@ -772,21 +828,25 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
           padding: '10px',
           margin: '10px',
           background: '#f8d7da',
-          borderRadius: '4px'
+          borderRadius: '4px',
+          flexShrink: 0
         }}>
           {displayError}
         </div>
       )}
 
-      {/* PDF Container */}
+      {/* PDF Container - Takes available space, scrollable */}
       <div 
         className="embedpdf-viewer" 
         style={{
-          overflow: isDrawingMode ? 'hidden' : 'visible',
+          flex: 1,
           width: '100%',
-          height: 'auto',
-          minHeight: '400px',
-          position: 'relative'
+          minHeight: 0, // Allow flex to shrink
+          position: 'relative',
+          overflow: 'auto', // Make viewer scrollable
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
         }}
       >
         <div 
@@ -794,24 +854,25 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
           ref={containerRef}
           style={{
             width: '100%',
-            height: 'auto',
-            minHeight: '400px',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            justifyContent: 'center',
+            justifyContent: 'flex-start',
             position: 'relative',
             padding: '20px 10px',
             boxSizing: 'border-box',
-            margin: '0 auto'
+            margin: '0 auto',
+            minHeight: 'min-content' // Allow content to determine height
           }}
         >
           <div 
             ref={viewportWrapperRef} 
             style={{ 
               width: '100%', 
-              height: '100%',
-              minHeight: '400px'
+              minHeight: '400px',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center'
             }}
           >
             <EmbedPDF 
@@ -825,22 +886,23 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                 style={{ 
                   backgroundColor: '#f1f3f5',
                   width: '100%',
-                  height: '100%',
                   minHeight: '400px',
                   position: 'relative',
-                  display: 'block'
+                  display: 'block',
+                  flex: '0 0 auto' // Don't grow/shrink, use content size
                 }}
               >
                 <Scroller
                   renderPage={({ width, height, pageIndex, scale, rotation }) => {
                     console.log('🔍 Scroller: renderPage called for page', pageIndex, 'width:', width, 'height:', height, 'scale:', scale);
                     
-                    // Store page dimensions for coordinate conversion
+                    // Store page dimensions WITH scale for coordinate conversion
+                    // This captures the exact rendering context at render time
                     const existingIndex = pageDimensionsRef.current.findIndex(p => p.pageIndex === pageIndex);
                     if (existingIndex >= 0) {
-                      pageDimensionsRef.current[existingIndex] = { width, height, pageIndex };
+                      pageDimensionsRef.current[existingIndex] = { width, height, pageIndex, scale };
                     } else {
-                      pageDimensionsRef.current.push({ width, height, pageIndex });
+                      pageDimensionsRef.current.push({ width, height, pageIndex, scale });
                     }
                     
                     return (
@@ -861,31 +923,28 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
                         >
                           {/* The RenderLayer is responsible for drawing the page */}
                           <RenderLayer pageIndex={pageIndex} scale={scale} />
-                        {/* Annotation layer for drawing/signing - must be transparent */}
-                        {/* Only render annotation layer when in drawing mode to avoid blocking touch events */}
-                        {isDrawingMode && (
-                          <div
-                            style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: 0,
-                              width: '100%',
-                              height: '100%',
-                              pointerEvents: 'auto',
-                              backgroundColor: 'transparent',
-                              zIndex: 1,
-                              touchAction: 'none'
-                            }}
-                          >
-                            <AnnotationLayer 
-                              pageIndex={pageIndex} 
-                              scale={scale} 
-                              pageWidth={width}
-                              pageHeight={height}
-                              rotation={rotation}
-                            />
-                          </div>
-                        )}
+                        {/* Annotation layer - always render for viewing saved annotations */}
+                        {/* EmbedPDF controls interactivity through the annotation API, not pointer events */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            height: '100%',
+                            pointerEvents: 'auto', // Always allow events - EmbedPDF API controls drawing
+                            backgroundColor: 'transparent',
+                            zIndex: 1
+                          }}
+                        >
+                          <AnnotationLayer 
+                            pageIndex={pageIndex} 
+                            scale={scale} 
+                            pageWidth={width}
+                            pageHeight={height}
+                            rotation={rotation}
+                          />
+                        </div>
                       </div>
                     </PagePointerProvider>
                     );
@@ -903,7 +962,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
         {/* Old drawing canvas removed - using EmbedPDF annotations instead */}
       </div>
 
-      {/* Action Buttons */}
+      {/* Action Buttons - Fixed position, not affected by viewer content */}
       {!readOnly && (
         <div 
           style={{
@@ -912,8 +971,13 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerRef, EmbedPDFViewerProps>
             display: 'flex',
             flexDirection: 'column',
             gap: '10px',
-            marginTop: '10px',
-            padding: '0 10px'
+            padding: '10px',
+            flexShrink: 0, // Don't shrink
+            backgroundColor: '#f5f5f5',
+            borderTop: '1px solid #dee2e6',
+            position: 'sticky', // Sticky to bottom of scrollable area
+            bottom: 0,
+            zIndex: 100
           }}
         >
           {/* Zoom controls will be portaled here */}

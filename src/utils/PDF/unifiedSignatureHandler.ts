@@ -543,8 +543,38 @@ export async function embedSignatureIntoPDF(
   console.log('🔍 embedSignatureIntoPDF: PDF page dimensions:', page.getSize());
   console.log('🔍 embedSignatureIntoPDF: Embedding at position:', position);
   
+  // CRITICAL: Calculate the actual scale factor
+  // The signature image is rendered at 3x scale with 20px padding on all sides
+  // Image size: (bounds.width + 40) * 3 x (bounds.height + 40) * 3 pixels
+  // PDF position: bounds.width x bounds.height in points
+  // pdf-lib will scale the entire image to fit the position dimensions
+  // So we need to ensure the position dimensions match the actual bounds (not including padding)
+  
+  // Calculate what the bounds would be in pixels (from the image size)
+  // Image has padding: 20px * 2 = 40px total, rendered at 3x scale
+  const padding = 20;
+  const renderScale = 3.0;
+  const imageBoundsWidth = (signaturePng.width / renderScale) - (padding * 2);
+  const imageBoundsHeight = (signaturePng.height / renderScale) - (padding * 2);
+  
+  // Validate: The position dimensions should match the bounds (in PDF points)
+  // If they don't match, we might be using the wrong dimensions
+  const positionToImageRatio = {
+    width: position.width / imageBoundsWidth,
+    height: position.height / imageBoundsHeight
+  };
+  
+  console.log('🔍 embedSignatureIntoPDF: Scale validation:', {
+    imageSize: { width: signaturePng.width, height: signaturePng.height },
+    imageBounds: { width: imageBoundsWidth, height: imageBoundsHeight },
+    positionDimensions: { width: position.width, height: position.height },
+    ratio: positionToImageRatio,
+    note: 'If ratio is not ~1.0, there may be a coordinate space mismatch'
+  });
+  
   // Draw signature on page
   // Note: pdf-lib uses bottom-left origin, so Y coordinate is already adjusted
+  // pdf-lib will scale the entire image (including padding) to fit position.width x position.height
   page.drawImage(signaturePng, {
     x: position.x,
     y: position.y,
@@ -572,6 +602,7 @@ export async function embedSignatureIntoPDF(
 
 /**
  * Main function: Extract signature from EmbedPDF and embed into PDF
+ * Now supports using stored PDF coordinates from annotation metadata for accurate positioning
  */
 export async function savePDFWithEmbedPDFSignature(
   originalPdfBytes: Uint8Array | ArrayBuffer,
@@ -579,7 +610,8 @@ export async function savePDFWithEmbedPDFSignature(
   renderedPageWidth: number,
   renderedPageHeight: number,
   pageIndex: number = 0,
-  flatten: boolean = true
+  flatten: boolean = true,
+  annotationMetadata?: Array<{ coordinates?: { pdfCoordinates?: { rect?: [number, number, number, number] } } }> // Optional: stored metadata with PDF coordinates
 ): Promise<Uint8Array> {
   console.log('🔍 savePDFWithEmbedPDFSignature: Starting unified signature save...');
   
@@ -610,36 +642,98 @@ export async function savePDFWithEmbedPDFSignature(
   }
   const page = pages[pageIndex];
   
-  // Step 3: Get annotation rect if available (might be in PDF coordinate space)
-  let annotationRect: number[] | undefined;
-  if (annotationState?.byUid) {
-    const annotations = Object.values(annotationState.byUid) as any[];
-    const inkAnnotations = annotations.filter((ann) => {
-      const annotationObj = ann?.object || ann;
-      const typeNum = typeof annotationObj?.type === 'number' ? annotationObj.type : null;
-      const hasInkList = !!(annotationObj?.inkList || ann?.inkList);
-      return typeNum === 15 || hasInkList;
-    });
+  // Step 3: Check if we have stored PDF coordinates (preferred method)
+  let position: SignaturePosition | undefined;
+  if (annotationMetadata && annotationMetadata.length > 0) {
+    // Find the first annotation with PDF coordinates
+    const annotationWithPdfCoords = annotationMetadata.find(ann => 
+      ann.coordinates?.pdfCoordinates?.rect
+    );
     
-    if (inkAnnotations.length > 0) {
-      const annotationObj = inkAnnotations[0]?.object || inkAnnotations[0];
-      const rect = annotationObj?.rect || inkAnnotations[0]?.rect;
-      if (rect && Array.isArray(rect) && rect.length >= 4) {
-        annotationRect = rect;
-        console.log('🔍 savePDFWithEmbedPDFSignature: Found annotation rect:', rect);
-      }
+    if (annotationWithPdfCoords?.coordinates?.pdfCoordinates?.rect) {
+      const pdfRect = annotationWithPdfCoords.coordinates.pdfCoordinates.rect;
+      const [x1, y1, x2, y2] = pdfRect;
+      const minX = Math.min(x1, x2);
+      const maxX = Math.max(x1, x2);
+      const minY = Math.min(y1, y2);
+      const maxY = Math.max(y1, y2);
+      
+      // Use PDF rect dimensions directly - these are already in PDF coordinate space
+      // The rect represents the bounding box of the annotation in PDF points
+      const pdfWidth = maxX - minX;
+      const pdfHeight = maxY - minY;
+      
+      // CRITICAL: The signature image is rendered at 3x scale with 20px padding on all sides
+      // The PDF coordinates represent the bounds WITHOUT padding
+      // pdf-lib will scale the entire image (including padding) to fit the width/height we specify
+      // So we need to use the bounds dimensions (without padding) for the PDF position
+      // The signature image size is: (bounds.width + 40) * 3 x (bounds.height + 40) * 3 pixels
+      // But the PDF coordinates are: bounds.width x bounds.height in points
+      // pdf-lib scales the image to fit, so we use the bounds dimensions directly
+      
+      // Use the PDF rect directly for positioning (bounds only, no padding)
+      position = {
+        x: minX,
+        y: minY, // Bottom-left Y in PDF space
+        width: pdfWidth,  // Use PDF rect width directly (bounds only)
+        height: pdfHeight, // Use PDF rect height directly (bounds only)
+        pageIndex,
+      };
+      
+      console.log('✅ savePDFWithEmbedPDFSignature: Using stored PDF coordinates directly:', {
+        pdfRect,
+        position,
+        signatureBounds: signatureData.bounds,
+        pdfDimensions: { width: pdfWidth, height: pdfHeight },
+        signatureImageSize: {
+          // The actual image includes padding and is at 3x scale
+          width: (signatureData.bounds.width + 40) * 3,
+          height: (signatureData.bounds.height + 40) * 3,
+          boundsOnly: {
+            width: signatureData.bounds.width * 3,
+            height: signatureData.bounds.height * 3
+          }
+        },
+        note: 'pdf-lib will scale the 3x image (with padding) to fit the PDF dimensions (bounds only)'
+      });
     }
   }
   
-  // Step 4: Calculate signature position in PDF coordinates
-  const position = calculateSignaturePosition(
-    signatureData.bounds,
-    page,
-    renderedPageWidth,
-    renderedPageHeight,
-    pageIndex,
-    annotationRect
-  );
+  // Step 4: Fallback to calculating position from annotation state if PDF coordinates not available
+  if (!position) {
+    console.log('🔍 savePDFWithEmbedPDFSignature: PDF coordinates not available, calculating from annotation state...');
+    
+    // Get annotation rect if available (might be in PDF coordinate space)
+    let annotationRect: number[] | undefined;
+    if (annotationState?.byUid) {
+      const annotations = Object.values(annotationState.byUid) as any[];
+      const inkAnnotations = annotations.filter((ann) => {
+        const annotationObj = ann?.object || ann;
+        const typeNum = typeof annotationObj?.type === 'number' ? annotationObj.type : null;
+        const hasInkList = !!(annotationObj?.inkList || ann?.inkList);
+        return typeNum === 15 || hasInkList;
+      });
+      
+      if (inkAnnotations.length > 0) {
+        const annotationObj = inkAnnotations[0]?.object || inkAnnotations[0];
+        const rect = annotationObj?.rect || inkAnnotations[0]?.rect;
+        if (rect && Array.isArray(rect) && rect.length >= 4) {
+          annotationRect = rect;
+          console.log('🔍 savePDFWithEmbedPDFSignature: Found annotation rect:', rect);
+        }
+      }
+    }
+    
+    // Calculate signature position in PDF coordinates
+    position = calculateSignaturePosition(
+      signatureData.bounds,
+      page,
+      renderedPageWidth,
+      renderedPageHeight,
+      pageIndex,
+      annotationRect
+    );
+  }
   
   // Step 5: Embed signature into PDF
   const signedPdfBytes = await embedSignatureIntoPDF(
