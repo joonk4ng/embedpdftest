@@ -15,32 +15,53 @@ const formatToMMDDYY = (date: Date): string => {
 const PDFSigning: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [pdfId, setPdfId] = useState<string>('federal-form');
+  
+  // Initialize state from URL params immediately to avoid loading wrong PDF
+  const getInitialPdfId = () => {
+    const urlPdfId = searchParams.get('pdfId');
+    if (urlPdfId) return urlPdfId;
+    const urlDate = searchParams.get('date') || formatToMMDDYY(new Date());
+    const dateFormatted = urlDate.replace(/\//g, '-');
+    return `federal-form-${dateFormatted}`;
+  };
+  
+  const [pdfId, setPdfId] = useState<string>(getInitialPdfId());
   const [crewInfo, setCrewInfo] = useState({
-    crewNumber: 'N/A',
-    fireName: 'N/A',
-    fireNumber: 'N/A'
+    crewNumber: searchParams.get('crewNumber') || 'N/A',
+    fireName: searchParams.get('fireName') || 'N/A',
+    fireNumber: searchParams.get('fireNumber') || 'N/A'
   });
-  const [date, setDate] = useState(new Date().toLocaleDateString());
+  const [date, setDate] = useState(searchParams.get('date') || formatToMMDDYY(new Date()));
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const urlPdfId = searchParams.get('pdfId') || 'federal-form';
+    const urlPdfId = searchParams.get('pdfId');
     const urlCrewNumber = searchParams.get('crewNumber') || 'N/A';
     const urlFireName = searchParams.get('fireName') || 'N/A';
     const urlFireNumber = searchParams.get('fireNumber') || 'N/A';
-    const urlDate = searchParams.get('date') || new Date().toLocaleDateString();
+    const urlDate = searchParams.get('date') || formatToMMDDYY(new Date());
+
+    // Determine the PDF ID: use URL param if provided, otherwise construct from date
+    // This ensures we load the correct date-specific PDF
+    let effectivePdfId = urlPdfId;
+    if (!effectivePdfId) {
+      // Fallback: construct date-specific ID from date parameter
+      const dateFormatted = urlDate.replace(/\//g, '-'); // Convert MM/DD/YY to MM-DD-YY
+      effectivePdfId = `federal-form-${dateFormatted}`;
+      console.log('🔍 PDFSigning: No pdfId in URL, constructed from date:', effectivePdfId);
+    }
 
     logTrace('PDFSIGNING_INIT', {
       urlPdfId,
+      effectivePdfId,
       urlCrewNumber,
       urlFireName,
       urlFireNumber,
       urlDate
     });
 
-    setPdfId(urlPdfId);
+    setPdfId(effectivePdfId);
     setCrewInfo({
       crewNumber: urlCrewNumber,
       fireName: urlFireName,
@@ -50,36 +71,48 @@ const PDFSigning: React.FC = () => {
 
     const checkPDF = async () => {
       try {
-        logTrace('PDFSIGNING_CHECK_PDF_START', { pdfId: urlPdfId });
+        logTrace('PDFSIGNING_CHECK_PDF_START', { pdfId: effectivePdfId });
         
         // Run quick check for debugging
-        const quickCheck = await quickCheckPDF(urlPdfId);
+        const quickCheck = await quickCheckPDF(effectivePdfId);
         if (!quickCheck.available) {
           logTrace('PDFSIGNING_CHECK_PDF_FAILED', {
-            pdfId: urlPdfId,
+            pdfId: effectivePdfId,
             error: quickCheck.error,
             details: quickCheck.details
           });
         } else {
           logTrace('PDFSIGNING_CHECK_PDF_SUCCESS', {
-            pdfId: urlPdfId,
+            pdfId: effectivePdfId,
             details: quickCheck.details
           });
         }
         
         // Run full trace if debugging enabled
-        await traceSigningSystem(urlPdfId);
+        await traceSigningSystem(effectivePdfId);
         
         // Check all PDFs in storage for debugging
         await checkAllPDFs();
         
-        const storedPDF = await getPDF(urlPdfId);
+        const storedPDF = await getPDF(effectivePdfId);
         if (!storedPDF) {
-          logTrace('PDFSIGNING_PDF_NOT_FOUND', { pdfId: urlPdfId });
-          setError('PDF not found. Please return to the main page and try again.');
+          logTrace('PDFSIGNING_PDF_NOT_FOUND', { pdfId: effectivePdfId });
+          // Try fallback to old 'federal-form' ID for backward compatibility
+          const fallbackPdf = await getPDF('federal-form');
+          if (fallbackPdf) {
+            console.log('⚠️ PDFSigning: Date-specific PDF not found, using fallback federal-form');
+            setPdfId('federal-form');
+            logTrace('PDFSIGNING_PDF_FOUND_FALLBACK', {
+              pdfId: 'federal-form',
+              pdfSize: fallbackPdf.pdf.size,
+              metadata: fallbackPdf.metadata
+            });
+          } else {
+            setError('PDF not found. Please return to the main page and try again.');
+          }
         } else {
           logTrace('PDFSIGNING_PDF_FOUND', {
-            pdfId: urlPdfId,
+            pdfId: effectivePdfId,
             pdfSize: storedPDF.pdf.size,
             metadata: storedPDF.metadata
           });
@@ -87,7 +120,7 @@ const PDFSigning: React.FC = () => {
         setIsLoading(false);
       } catch (err) {
         logTrace('PDFSIGNING_CHECK_PDF_ERROR', {
-          pdfId: urlPdfId,
+          pdfId: effectivePdfId,
           error: err instanceof Error ? err.message : String(err)
         });
         setError('Error loading PDF. Please try again.');
@@ -264,9 +297,10 @@ const PDFSigning: React.FC = () => {
       }}>
         {/* Use secondary viewer with ViewportPluginPackage */}
         {(() => {
-          console.log('🔍 PDFSigning: Rendering EmbedPDFViewerSecondary (with ViewportPluginPackage, viewportGap: 10)');
+          console.log('🔍 PDFSigning: Rendering EmbedPDFViewerSecondary with pdfId:', pdfId, 'date:', date);
           return (
             <EmbedPDFViewerSecondary
+              key={pdfId} // Force re-render when pdfId changes
               pdfId={pdfId}
               onSave={handleSave}
               crewInfo={crewInfo}

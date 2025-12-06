@@ -301,24 +301,30 @@ export const usePDFGeneration = ({
         }
       }
       
-      // Store the filled PDF
-      await storePDFWithId('federal-form', filledPdfBlob, null, {
+      // Create date-specific PDF ID to prevent overwriting PDFs from different dates
+      const formDate = currentSelectedDate || formatToMMDDYY(new Date());
+      const dateFormatted = formDate.replace(/\//g, '-'); // Convert MM/DD/YY to MM-DD-YY for ID
+      const dateSpecificPdfId = `federal-form-${dateFormatted}`;
+      
+      // Store the filled PDF with date-specific ID
+      await storePDFWithId(dateSpecificPdfId, filledPdfBlob, null, {
         filename: 'OF297-24-filled.pdf',
-        date: new Date().toISOString(),
+        date: formDate,
         crewNumber: formData.agreementNumber || 'N/A',
         fireName: formData.incidentName || 'N/A',
         fireNumber: formData.incidentNumber || 'N/A'
       });
 
       console.log('✅ Federal: PDF filled and stored successfully with', verifyFilledCount, 'filled fields, navigating to signing page...');
+      console.log('🔍 Federal: Stored PDF with date-specific ID:', dateSpecificPdfId, 'for date:', formDate);
       
       // Navigate to PDF signing page with parameters
       const params = new URLSearchParams({
-        pdfId: 'federal-form',
+        pdfId: dateSpecificPdfId,
         crewNumber: formData.agreementNumber || 'N/A',
         fireName: formData.incidentName || 'N/A',
         fireNumber: formData.incidentNumber || 'N/A',
-        date: currentSelectedDate || formatToMMDDYY(new Date())
+        date: formDate
       });
       
       navigate(`/pdf-signing?${params.toString()}`);

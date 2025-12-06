@@ -3,6 +3,7 @@ import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperat
 import { EmbedPDFZoomControls } from './EmbedPDFZoomControls';
 import { EmbedPDFAnnotationControls, type EmbedPDFAnnotationControlsRef } from './EmbedPDFAnnotationControls';
 import { EmbedPDFExportButton } from './EmbedPDFExportButton';
+import { EmbedPDFAnnotationEventListener } from './EmbedPDFAnnotationEventListener';
 import { savePDFWithEmbedPDFSignature } from '../../utils/PDF/unifiedSignatureHandler';
 import * as PDFLib from 'pdf-lib';
 import { usePDFLoaderSecondary } from '../../hooks/usePDFLoaderSecondary';
@@ -16,7 +17,9 @@ import { usePdfiumEngine } from '@embedpdf/engines/react';
 import { Viewport } from '@embedpdf/plugin-viewport/react';
 import { Scroller } from '@embedpdf/plugin-scroll/react';
 import { RenderLayer } from '@embedpdf/plugin-render/react';
+import { TilingLayer } from '@embedpdf/plugin-tiling/react';
 import { PagePointerProvider } from '@embedpdf/plugin-interaction-manager/react';
+import { SelectionLayer } from '@embedpdf/plugin-selection/react';
 import { AnnotationLayer } from '@embedpdf/plugin-annotation/react';
 import { useLoaderCapability } from '@embedpdf/plugin-loader/react';
 
@@ -90,6 +93,11 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
       embedPdfEngineRef.current = engine;
     }
   }, [engine]);
+
+  // Debug: Log PDF ID changes
+  useEffect(() => {
+    console.log('🔍 EmbedPDFViewerSecondary: pdfId prop changed:', pdfId, 'date:', date);
+  }, [pdfId, date]);
 
   // Load PDF using secondary hook (with ViewportPluginPackage)
   const { pdfUrl, plugins, isLoading, pdfDocRef } = usePDFLoaderSecondary(pdfId, pdfBlob, date);
@@ -258,7 +266,13 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
   }));
 
   const toggleDrawingMode = useCallback(() => {
-    setIsDrawingMode(prev => !prev);
+    // Toggle EmbedPDF ink annotation mode
+    if (annotationControlsRef.current) {
+      annotationControlsRef.current.toggleInk();
+      // State will be updated via callback from annotation controls
+    } else {
+      setIsDrawingMode(prev => !prev);
+    }
   }, []);
 
   const clearDrawing = useCallback(() => {
@@ -363,6 +377,8 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
               plugins={plugins}
             >
               <PDFLoaderTrigger pdfUrl={pdfUrl} pdfId={pdfId} />
+              {/* Annotation event listener for logging/saving annotations */}
+              <EmbedPDFAnnotationEventListener />
               <Viewport 
                 style={{ 
                   backgroundColor: '#f1f3f5',
@@ -398,30 +414,24 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
                             pointerEvents: 'auto'
                           }}
                         >
-                          {/* The RenderLayer is responsible for drawing the page */}
-                          <RenderLayer pageIndex={pageIndex} scale={scale} />
+                          {/* Two-layer rendering strategy for optimal performance */}
+                          {/* 1. Low-resolution base layer for immediate feedback */}
+                          <RenderLayer pageIndex={pageIndex} scale={0.5} />
                           
-                          {/* Annotation layer overlay */}
-                          <div
-                            style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: 0,
-                              width: '100%',
-                              height: '100%',
-                              pointerEvents: 'auto',
-                              backgroundColor: 'transparent',
-                              zIndex: 1
-                            }}
-                          >
-                            <AnnotationLayer 
-                              pageIndex={pageIndex} 
-                              scale={scale} 
-                              pageWidth={width}
-                              pageHeight={height}
-                              rotation={rotation}
-                            />
-                          </div>
+                          {/* 2. High-resolution tile layer on top (renders only visible tiles) */}
+                          <TilingLayer pageIndex={pageIndex} scale={scale} />
+                          
+                          {/* 3. Selection layer for text selection */}
+                          <SelectionLayer pageIndex={pageIndex} scale={scale} />
+                          
+                          {/* 4. Annotation layer on top (handles annotation rendering and interactions) */}
+                          <AnnotationLayer 
+                            pageIndex={pageIndex} 
+                            scale={scale} 
+                            pageWidth={width}
+                            pageHeight={height}
+                            rotation={rotation}
+                          />
                         </div>
                       </PagePointerProvider>
                     );

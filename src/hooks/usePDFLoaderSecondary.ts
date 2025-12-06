@@ -5,8 +5,10 @@ import { LoaderPluginPackage } from '@embedpdf/plugin-loader/react';
 import { ViewportPluginPackage } from '@embedpdf/plugin-viewport/react';
 import { ScrollPluginPackage, ScrollStrategy } from '@embedpdf/plugin-scroll/react';
 import { RenderPluginPackage } from '@embedpdf/plugin-render/react';
+import { TilingPluginPackage } from '@embedpdf/plugin-tiling/react';
 import { InteractionManagerPluginPackage } from '@embedpdf/plugin-interaction-manager/react';
 import { SelectionPluginPackage } from '@embedpdf/plugin-selection/react';
+import { HistoryPluginPackage } from '@embedpdf/plugin-history/react';
 import { AnnotationPluginPackage } from '@embedpdf/plugin-annotation/react';
 import { ZoomPluginPackage } from '@embedpdf/plugin-zoom/react';
 import { ExportPluginPackage } from '@embedpdf/plugin-export/react';
@@ -43,17 +45,21 @@ export const usePDFLoaderSecondary = (
         setIsLoading(true);
         setError(null);
 
+        console.log('🔍 usePDFLoaderSecondary: Loading PDF with pdfId:', pdfId, 'date:', date);
+
         let pdfBlobToUse: Blob | null = null;
 
         if (pdfBlob) {
           pdfBlobToUse = pdfBlob;
           console.log('🔍 usePDFLoaderSecondary: Using provided PDF blob, size:', pdfBlobToUse.size);
         } else if (pdfId) {
+          console.log('🔍 usePDFLoaderSecondary: Attempting to load PDF from IndexedDB with ID:', pdfId);
           const pdfData = await getPDF(pdfId);
           if (pdfData?.pdf) {
             pdfBlobToUse = pdfData.pdf;
-            console.log('🔍 usePDFLoaderSecondary: Loaded PDF from IndexedDB, size:', pdfBlobToUse.size);
+            console.log('✅ usePDFLoaderSecondary: Loaded PDF from IndexedDB, size:', pdfBlobToUse.size, 'metadata:', pdfData.metadata);
           } else {
+            console.error('❌ usePDFLoaderSecondary: PDF not found in IndexedDB with ID:', pdfId);
             throw new Error(`PDF with id ${pdfId} not found`);
           }
         }
@@ -89,19 +95,34 @@ export const usePDFLoaderSecondary = (
             initialPage: 1, // Start at page 1 (1-based index)
           }),
           
-          // Register RenderPluginPackage after Viewport and Scroll (proper dependency order)
+          // Register RenderPluginPackage (dependency for TilingPluginPackage)
           createPluginRegistration(RenderPluginPackage),
           
-          // Other plugins
+          // Register TilingPluginPackage after all its dependencies (Viewport, Scroll, Render)
+          createPluginRegistration(TilingPluginPackage, {
+            tileSize: 768, // Size of each tile in pixels
+            overlapPx: 5, // Overlap between tiles to prevent seams
+            extraRings: 1, // Pre-render one ring of tiles outside the viewport for smoother scrolling
+          }),
+          
+          // Register Annotation Plugin dependencies first (required order)
           createPluginRegistration(InteractionManagerPluginPackage),
           createPluginRegistration(SelectionPluginPackage),
-          createPluginRegistration(AnnotationPluginPackage),
+          createPluginRegistration(HistoryPluginPackage), // Optional but recommended for undo/redo
+          
+          // Register and configure the Annotation Plugin (depends on InteractionManager, Selection, History)
+          createPluginRegistration(AnnotationPluginPackage, {
+            // Optional: Set the author name for created annotations
+            annotationAuthor: 'User',
+          }),
+          
+          // Other plugins
           createPluginRegistration(ZoomPluginPackage),
           createPluginRegistration(ExportPluginPackage),
         ];
 
         setPlugins(configuredPlugins);
-        console.log('✅ usePDFLoaderSecondary: Plugins configured with ViewportPluginPackage (viewportGap: 10) and ScrollPluginPackage (Vertical strategy, initialPage: 1)');
+        console.log('✅ usePDFLoaderSecondary: Plugins configured with ViewportPluginPackage (viewportGap: 10), ScrollPluginPackage (Vertical strategy, initialPage: 1), and TilingPluginPackage (tileSize: 768, overlapPx: 5, extraRings: 1)');
 
         setIsLoading(false);
       } catch (err) {
