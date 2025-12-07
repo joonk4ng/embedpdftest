@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { EmbedPDFViewerSecondary } from '../components/PDF/EmbedPDFViewerSecondary';
 import { getPDF, storePDFWithId } from '../utils/pdfStorage';
 import { logTrace, quickCheckPDF, traceSigningSystem, checkAllPDFs } from '../utils/signingSystemDebug';
+import { resolvePdfId, getSignedPdfId, normalizeDate } from '../utils/pdfIdResolver';
 
 const formatToMMDDYY = (date: Date): string => {
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
@@ -17,12 +18,11 @@ const PDFSigning: React.FC = () => {
   const [searchParams] = useSearchParams();
   
   // Initialize state from URL params immediately to avoid loading wrong PDF
+  // Use centralized resolver to derive PDF ID from date
   const getInitialPdfId = () => {
     const urlPdfId = searchParams.get('pdfId');
-    if (urlPdfId) return urlPdfId;
     const urlDate = searchParams.get('date') || formatToMMDDYY(new Date());
-    const dateFormatted = urlDate.replace(/\//g, '-');
-    return `federal-form-${dateFormatted}`;
+    return resolvePdfId({ pdfId: urlPdfId || undefined, date: urlDate, formType: 'federal' });
   };
   
   const [pdfId, setPdfId] = useState<string>(getInitialPdfId());
@@ -42,15 +42,13 @@ const PDFSigning: React.FC = () => {
     const urlFireNumber = searchParams.get('fireNumber') || 'N/A';
     const urlDate = searchParams.get('date') || formatToMMDDYY(new Date());
 
-    // Determine the PDF ID: use URL param if provided, otherwise construct from date
-    // This ensures we load the correct date-specific PDF
-    let effectivePdfId = urlPdfId;
-    if (!effectivePdfId) {
-      // Fallback: construct date-specific ID from date parameter
-      const dateFormatted = urlDate.replace(/\//g, '-'); // Convert MM/DD/YY to MM-DD-YY
-      effectivePdfId = `federal-form-${dateFormatted}`;
-      console.log('🔍 PDFSigning: No pdfId in URL, constructed from date:', effectivePdfId);
-    }
+    // Use centralized resolver to determine PDF ID from date or explicit ID
+    const effectivePdfId = resolvePdfId({ 
+      pdfId: urlPdfId || undefined, 
+      date: urlDate, 
+      formType: 'federal' 
+    });
+    console.log('🔍 PDFSigning: Resolved PDF ID:', effectivePdfId, 'from date:', urlDate, 'or pdfId:', urlPdfId);
 
     logTrace('PDFSIGNING_INIT', {
       urlPdfId,
@@ -133,12 +131,12 @@ const PDFSigning: React.FC = () => {
 
   const handleSave = async (pdfData: Blob, previewImage: Blob) => {
     try {
-      const saveDate = date || formatToMMDDYY(new Date());
+      const saveDate = normalizeDate(date || formatToMMDDYY(new Date()));
       const crewNumber = crewInfo?.crewNumber && crewInfo.crewNumber !== 'N/A' ? crewInfo.crewNumber : 'Crew';
       const fireName = crewInfo?.fireName && crewInfo.fireName !== 'N/A' ? crewInfo.fireName.replace(/[^a-zA-Z0-9]/g, '-') : 'Fire';
       const fireNumber = crewInfo?.fireNumber && crewInfo.fireNumber !== 'N/A' ? crewInfo.fireNumber : 'Number';
       
-      const signedPdfId = `federal-signed-${saveDate.replace(/\//g, '-')}`;
+      const signedPdfId = getSignedPdfId(saveDate);
       const filename = `Federal-Form-Signed-${crewNumber}-${fireName}-${fireNumber}-${saveDate.replace(/\//g, '-')}.pdf`;
       
       await storePDFWithId(signedPdfId, pdfData, previewImage, {

@@ -9,6 +9,7 @@ import * as PDFLib from 'pdf-lib';
 import { usePDFLoaderSecondary } from '../../hooks/usePDFLoaderSecondary';
 import { updateAnnotations, updateRendering, getPDF } from '../../utils/pdfStorage';
 import { convertEmbedPDFAnnotationsToMetadata, convertMetadataToEmbedPDFFormat } from '../../utils/PDF/annotationConverter';
+import { resolvePdfId } from '../../utils/pdfIdResolver';
 import '../../styles/components/EmbedPDFViewer.css';
 
 // EmbedPDF imports
@@ -64,6 +65,7 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
   
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [engineLoading, setEngineLoading] = useState(true);
+  const [documentReady, setDocumentReady] = useState(false);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportWrapperRef = useRef<HTMLDivElement>(null);
@@ -94,23 +96,27 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
     }
   }, [engine]);
 
-  // Debug: Log PDF ID changes
+  // Resolve PDF ID from date if not explicitly provided
+  const resolvedPdfId = pdfId || (date ? resolvePdfId({ date, formType: 'federal' }) : undefined);
+  
+  // Debug: Log PDF ID resolution
   useEffect(() => {
-    console.log('🔍 EmbedPDFViewerSecondary: pdfId prop changed:', pdfId, 'date:', date);
-  }, [pdfId, date]);
+    console.log('🔍 EmbedPDFViewerSecondary: Resolved PDF ID:', resolvedPdfId, 'from pdfId:', pdfId, 'date:', date);
+  }, [resolvedPdfId, pdfId, date]);
 
   // Load PDF using secondary hook (with ViewportPluginPackage)
-  const { pdfUrl, plugins, isLoading, pdfDocRef } = usePDFLoaderSecondary(pdfId, pdfBlob, date);
+  // Pass resolved ID to ensure correct PDF is loaded
+  const { pdfUrl, plugins, isLoading, pdfDocRef } = usePDFLoaderSecondary(resolvedPdfId, pdfBlob, date);
   
   // Load annotations from metadata when PDF is ready
   useEffect(() => {
-    if (!pdfId || isLoading || !pdfUrl || !annotationControlsRef.current) {
+    if (!resolvedPdfId || isLoading || !pdfUrl || !annotationControlsRef.current) {
       return;
     }
     
     const loadAnnotationsFromMetadata = async () => {
       try {
-        const pdfData = await getPDF(pdfId);
+        const pdfData = await getPDF(resolvedPdfId);
         if (pdfData?.annotations && pdfData.annotations.length > 0) {
           console.log('🔍 EmbedPDFViewerSecondary: Loading annotations from metadata...', pdfData.annotations.length);
           
@@ -134,7 +140,7 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
     }, 1000);
     
     return () => clearTimeout(timer);
-  }, [pdfId, pdfUrl, isLoading]);
+  }, [resolvedPdfId, pdfUrl, isLoading]);
 
   // Handle saving
   const handleSave = useCallback(async () => {
@@ -207,11 +213,13 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
             coordinateSpaceContexts
           );
           
-          await updateAnnotations(pdfId, annotationsMetadata);
-          await updateRendering(pdfId, {
-            pageDimensions: pageDimensionsRef.current,
-            devicePixelRatio: window.devicePixelRatio || 1
-          });
+          if (resolvedPdfId) {
+            await updateAnnotations(resolvedPdfId, annotationsMetadata);
+            await updateRendering(resolvedPdfId, {
+              pageDimensions: pageDimensionsRef.current,
+              devicePixelRatio: window.devicePixelRatio || 1
+            });
+          }
         } catch (metadataError) {
           console.error('⚠️ EmbedPDFViewerSecondary: Error storing annotations as metadata:', metadataError);
         }
@@ -221,9 +229,9 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
       let signedPdfBytes: Uint8Array;
       try {
         let storedAnnotationsMetadata: any[] | undefined;
-        if (pdfId) {
+        if (resolvedPdfId) {
           try {
-            const pdfData = await getPDF(pdfId);
+            const pdfData = await getPDF(resolvedPdfId);
             storedAnnotationsMetadata = pdfData?.annotations;
           } catch (e) {
             console.warn('⚠️ EmbedPDFViewerSecondary: Could not load stored annotations metadata:', e);
@@ -259,7 +267,7 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
       console.error('❌ EmbedPDFViewerSecondary: Error saving PDF:', error);
       throw error;
     }
-  }, [onSave, pdfId, pdfDocRef]);
+  }, [onSave, resolvedPdfId, pdfDocRef]);
 
   useImperativeHandle(ref, () => ({
     handleSave
@@ -376,7 +384,11 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
               engine={engine} 
               plugins={plugins}
             >
-              <PDFLoaderTrigger pdfUrl={pdfUrl} pdfId={pdfId} />
+              <PDFLoaderTrigger 
+                pdfUrl={pdfUrl} 
+                pdfId={pdfId}
+                onDocumentReady={() => setDocumentReady(true)}
+              />
               {/* Annotation event listener for logging/saving annotations */}
               <EmbedPDFAnnotationEventListener />
               <Viewport 
@@ -391,6 +403,8 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
               >
                 <Scroller
                   renderPage={({ width, height, pageIndex, scale, rotation }) => {
+                    console.log('🔍 Scroller: renderPage called for page', pageIndex, 'width:', width, 'height:', height, 'scale:', scale);
+                    
                     const existingIndex = pageDimensionsRef.current.findIndex(p => p.pageIndex === pageIndex);
                     if (existingIndex >= 0) {
                       pageDimensionsRef.current[existingIndex] = { width, height, pageIndex, scale };
@@ -415,11 +429,16 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
                           }}
                         >
                           {/* Two-layer rendering strategy for optimal performance */}
-                          {/* 1. Low-resolution base layer for immediate feedback */}
-                          <RenderLayer pageIndex={pageIndex} scale={0.5} />
-                          
-                          {/* 2. High-resolution tile layer on top (renders only visible tiles) */}
-                          <TilingLayer pageIndex={pageIndex} scale={scale} />
+                          {/* Only render layers if document is ready */}
+                          {documentReady && (
+                            <>
+                              {/* 1. Low-resolution base layer for immediate feedback */}
+                              <RenderLayer pageIndex={pageIndex} scale={0.5} />
+                              
+                              {/* 2. High-resolution tile layer on top (renders only visible tiles) */}
+                              <TilingLayer pageIndex={pageIndex} scale={scale} />
+                            </>
+                          )}
                           
                           {/* 3. Selection layer for text selection */}
                           <SelectionLayer pageIndex={pageIndex} scale={scale} />
@@ -549,11 +568,12 @@ export const EmbedPDFViewerSecondary = forwardRef<EmbedPDFViewerSecondaryRef, Em
 
 EmbedPDFViewerSecondary.displayName = 'EmbedPDFViewerSecondary';
 
-// Component to trigger PDF loading
+// Component to trigger PDF loading (fallback if plugin doesn't auto-load)
 const PDFLoaderTrigger: React.FC<{ 
   pdfUrl: string | null; 
   pdfId?: string;
-}> = ({ pdfUrl, pdfId }) => {
+  onDocumentReady?: () => void;
+}> = ({ pdfUrl, pdfId, onDocumentReady }) => {
   const { provides: loaderProvides } = useLoaderCapability();
   
   useEffect(() => {
@@ -561,16 +581,52 @@ const PDFLoaderTrigger: React.FC<{
       return;
     }
 
-    const loadPDF = async () => {
+    // Listen for document loaded event - this is crucial for Scroller to know pages are ready
+    const unsubscribeDocLoaded = loaderProvides.onDocumentLoaded((document) => {
+      console.log('✅ PDFLoaderTrigger: Document loaded event received, ID:', document.id, 'pages:', document.pageCount);
+      console.log('🔍 PDFLoaderTrigger: Document pages array:', document.pages);
+      if (document.pageCount === 0) {
+        console.error('❌ PDFLoaderTrigger: Document loaded but has 0 pages! This is a problem.');
+      } else {
+        console.log('✅ PDFLoaderTrigger: Document has', document.pageCount, 'pages, Scroller should render now');
+        // Notify parent that document is ready for rendering
+        if (onDocumentReady) {
+          onDocumentReady();
+        }
+      }
+    });
+
+    // Check if document is already loaded (plugin should auto-load from loadingOptions)
+    const checkAndLoad = async () => {
       try {
         const existingDoc = loaderProvides.getDocument();
         if (existingDoc) {
-          console.log('✅ PDFLoaderTrigger: PDF already loaded');
+          console.log('✅ PDFLoaderTrigger: PDF already loaded by plugin, document ID:', existingDoc.id, 'pages:', existingDoc.pageCount);
+          console.log('🔍 PDFLoaderTrigger: Document pages array:', existingDoc.pages);
+          console.log('🔍 PDFLoaderTrigger: Document structure:', {
+            id: existingDoc.id,
+            pageCount: existingDoc.pageCount,
+            hasPages: !!existingDoc.pages,
+            pagesLength: existingDoc.pages?.length
+          });
+          // If document is already loaded, notify immediately
+          if (existingDoc.pageCount > 0 && onDocumentReady) {
+            onDocumentReady();
+          }
           return;
         }
 
-        console.log('🔍 PDFLoaderTrigger: Loading PDF from URL...');
-        // loadDocument expects format: { type: 'url', pdfFile: { id, url } }
+        // Wait a bit to see if plugin auto-loads
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        const docAfterDelay = loaderProvides.getDocument();
+        if (docAfterDelay) {
+          console.log('✅ PDFLoaderTrigger: PDF loaded by plugin after delay');
+          return;
+        }
+
+        // Fallback: manually trigger load if plugin didn't auto-load
+        console.log('⚠️ PDFLoaderTrigger: Plugin did not auto-load, triggering manually...');
         await loaderProvides.loadDocument({
           type: 'url',
           pdfFile: {
@@ -578,13 +634,18 @@ const PDFLoaderTrigger: React.FC<{
             url: pdfUrl,
           },
         });
-        console.log('✅ PDFLoaderTrigger: PDF loaded successfully');
+        console.log('✅ PDFLoaderTrigger: PDF loaded manually');
       } catch (error) {
         console.error('❌ PDFLoaderTrigger: Error loading PDF:', error);
       }
     };
 
-    loadPDF();
+    checkAndLoad();
+
+    // Cleanup
+    return () => {
+      unsubscribeDocLoaded();
+    };
   }, [pdfUrl, pdfId, loaderProvides]);
 
   return null;

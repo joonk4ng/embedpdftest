@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getPDF } from '../utils/pdfStorage';
+import { getPDF, listPDFs } from '../utils/pdfStorage';
 import { createPluginRegistration } from '@embedpdf/core';
 import { LoaderPluginPackage } from '@embedpdf/plugin-loader/react';
 import { ViewportPluginPackage } from '@embedpdf/plugin-viewport/react';
@@ -54,12 +54,27 @@ export const usePDFLoaderSecondary = (
           console.log('🔍 usePDFLoaderSecondary: Using provided PDF blob, size:', pdfBlobToUse.size);
         } else if (pdfId) {
           console.log('🔍 usePDFLoaderSecondary: Attempting to load PDF from IndexedDB with ID:', pdfId);
+          
+          // Debug: List all PDF IDs in IndexedDB to see what's available
+          try {
+            const allPdfs = await listPDFs();
+            console.log('🔍 usePDFLoaderSecondary: All PDFs in IndexedDB:', allPdfs.map(p => ({ id: p.id, date: p.metadata.date })));
+            console.log('🔍 usePDFLoaderSecondary: Looking for PDF ID:', pdfId);
+            const matchingPdf = allPdfs.find(p => p.id === pdfId);
+            if (!matchingPdf) {
+              console.warn('⚠️ usePDFLoaderSecondary: PDF ID not found. Available IDs:', allPdfs.map(p => p.id));
+            }
+          } catch (e) {
+            console.warn('⚠️ usePDFLoaderSecondary: Could not list PDFs:', e);
+          }
+          
           const pdfData = await getPDF(pdfId);
           if (pdfData?.pdf) {
             pdfBlobToUse = pdfData.pdf;
             console.log('✅ usePDFLoaderSecondary: Loaded PDF from IndexedDB, size:', pdfBlobToUse.size, 'metadata:', pdfData.metadata);
           } else {
             console.error('❌ usePDFLoaderSecondary: PDF not found in IndexedDB with ID:', pdfId);
+            console.error('❌ usePDFLoaderSecondary: Expected ID format: federal-form-MM-DD-YY');
             throw new Error(`PDF with id ${pdfId} not found`);
           }
         }
@@ -80,9 +95,18 @@ export const usePDFLoaderSecondary = (
 
         // Configure plugins with proper dependency order and configuration
         // Register dependencies first, then dependent plugins
+        const effectivePdfId = pdfId || 'pdf';
         const configuredPlugins = [
-          // Essential plugins
-          createPluginRegistration(LoaderPluginPackage, {}),
+          // Essential plugins - LoaderPluginPackage with loadingOptions
+          createPluginRegistration(LoaderPluginPackage, {
+            loadingOptions: {
+              type: 'url',
+              pdfFile: {
+                id: effectivePdfId,
+                url: objectUrl,
+              },
+            },
+          }),
           
           // Register ViewportPluginPackage first (dependency for ScrollPluginPackage)
           createPluginRegistration(ViewportPluginPackage, {

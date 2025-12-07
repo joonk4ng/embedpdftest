@@ -4,6 +4,7 @@ import * as PDFLib from 'pdf-lib';
 import type { FederalEquipmentEntry, FederalPersonnelEntry, FederalFormData } from '../utils/engineTimeDB';
 import { getPDF, storePDFWithId } from '../utils/pdfStorage';
 import { mapFederalToPDFFields, validateFederalFormData, getFederalPDFFieldName } from '../utils/fieldmapper/federalFieldMapper';
+import { derivePdfIdFromDate, normalizeDate } from '../utils/pdfIdResolver';
 
 interface UsePDFGenerationProps {
   formData: FederalFormData;
@@ -221,18 +222,9 @@ export const usePDFGeneration = ({
         // But let's continue and see if flattening still works
       }
 
-      // Flatten the form fields so they become part of the PDF content
-      // This is necessary because EmbedPDF's RenderLayer may not render form field values
-      // Flattening converts form fields into actual rendered content
-      try {
-        console.log('🔍 Federal: Flattening form fields to make them visible in PDF rendering...');
-        form.flatten();
-        console.log('✅ Federal: Form fields flattened successfully');
-      } catch (flattenError) {
-        console.warn('⚠️ Federal: Could not flatten form fields:', flattenError);
-        console.warn('⚠️ Federal: PDF will be saved with editable form fields (may not display correctly in EmbedPDF)');
-        // Continue without flattening - the PDF will still have the data, just might not render correctly
-      }
+      // NOTE: We do NOT flatten here - form fields must remain intact for editing/signing
+      // Flattening will happen when the user saves/signs the PDF (in the save handler)
+      // This ensures the PDF can be filled again if needed and form fields remain editable
 
       // Save the filled PDF
       const pdfBytes = await pdfDoc.save();
@@ -259,7 +251,6 @@ export const usePDFGeneration = ({
       console.log('✅ Federal: PDF blob validated, size:', filledPdfBlob.size, 'bytes');
       
       // Verify the filled PDF actually has filled fields before storing
-      // Note: After flattening, form fields are converted to rendered content, so we can't check them the same way
       console.log('🔍 Federal: Verifying filled PDF before storing...');
       const verifyBlobCopy = filledPdfBlob.slice(0);
       const verifyFilledDoc = await PDFLib.PDFDocument.load(await verifyBlobCopy.arrayBuffer());
@@ -268,11 +259,10 @@ export const usePDFGeneration = ({
       
       let verifyFilledCount = 0;
       
-      // If form was flattened, fields array will be empty (fields are now rendered content)
+      // Check if fields are filled (form fields should still exist since we didn't flatten)
       if (verifyFields.length === 0) {
-        console.log('✅ Federal: PDF form was flattened - fields are now rendered content (this is correct)');
-        console.log('✅ Federal: Verification complete - flattened PDF should display filled values correctly');
-        verifyFilledCount = filledFieldsCount; // Use the count from before flattening
+        console.warn('⚠️ Federal: PDF has no form fields - may have been flattened previously');
+        verifyFilledCount = filledFieldsCount; // Use the count from before
       } else {
         // Form wasn't flattened, check if fields are filled
         verifyFields.forEach(field => {
@@ -301,10 +291,11 @@ export const usePDFGeneration = ({
         }
       }
       
-      // Create date-specific PDF ID to prevent overwriting PDFs from different dates
-      const formDate = currentSelectedDate || formatToMMDDYY(new Date());
-      const dateFormatted = formDate.replace(/\//g, '-'); // Convert MM/DD/YY to MM-DD-YY for ID
-      const dateSpecificPdfId = `federal-form-${dateFormatted}`;
+      // Use centralized resolver to create date-specific PDF ID
+      const formDate = normalizeDate(currentSelectedDate || formatToMMDDYY(new Date()));
+      const dateSpecificPdfId = derivePdfIdFromDate(formDate, 'federal');
+      
+      console.log('🔍 usePDFGeneration: Derived PDF ID:', dateSpecificPdfId, 'from date:', formDate);
       
       // Store the filled PDF with date-specific ID
       await storePDFWithId(dateSpecificPdfId, filledPdfBlob, null, {
